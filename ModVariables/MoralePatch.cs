@@ -14,70 +14,85 @@ namespace ModVariables
 {
     public class ModVariablesModEntry : ModEntryPointAdapter
     {
-        public const string MY_HARMONY_ID = "harry.moraleSystem";
-        public Harmony harmony;
+        public const string MY_HARMONY_ID = "harry.moraleSystem.patch";
+        public static Harmony harmony;
 
         public override void Initialize(ModSettings modSettings)
         {
             if (harmony != null)
             {
-                harmony.UnpatchAll(harmony.Id);
-                return;
+                Shutdown();
             }
+               
             harmony = new Harmony(MY_HARMONY_ID);
             harmony.PatchAll();
         }
 
         public override void Shutdown()
         {
-            if (harmony != null)
-            {
-                harmony.UnpatchAll(MY_HARMONY_ID);
-            }
+            if (harmony == null)
+                return;
+            harmony.UnpatchAll(MY_HARMONY_ID);
+            harmony = null;
         }
     }
 
-    [HarmonyPatch(typeof(Player), nameof(Player.doTurn), new Type[] { })]
-
+    [HarmonyPatch]
     public class MoraleSystemPatch
     {
-        private const string rpStr = "MORALE_REST_POINT";
-        private const string moraleStr = "MORALE";
-        public static int turnNumber = -1;
-        
+        private const string RPEXTRA = "MORALE_REST_POINT_EXTRA";
+        private const string MORALEEXTRA = "MORALE_EXTRA";
+        private const string RP = "CURR_REST_POINT_EXTRA";
+        private const string MORALE = "CURR_MORALE";
 
+        public const string DEFAULTMORALE = "100";
+        public const int MORALE_DIVISOR = 10;
+        public static ItemType itemUnitMorale = (ItemType) 1000;
+
+        public static int generalDelta = 50;
+        public static int perLevel = 10;
+        public static int recoveryPercent = 10; 
+
+        [HarmonyPatch(typeof(Player), nameof(Player.doTurn))]
         static void Prefix(Player __instance)
         {
             Game game = __instance.game();
-            
-            if (game.getTurn() == turnNumber)
+             foreach (Unit unit in game.getUnits())
             {
-                return;
-            }
-            turnNumber = game.getTurn();
-           
-            foreach (Unit unit in game.getUnits())
-            {
-                if (unit.player() == __instance && unit.isAlive())
+                if (unit.player() == __instance && unit.isAlive() && unit.canDamage())
                 {
-
-                    if (string.IsNullOrEmpty(unit.getModVariable(rpStr)) || string.IsNullOrEmpty(unit.getModVariable(moraleStr)))
+                    if (string.IsNullOrEmpty(unit.getModVariable(RP)) || string.IsNullOrEmpty(unit.getModVariable(MORALE)))
                     {
-                        MohawkAssert.Assert(false, "found a unit without moraleStr initialization");
-                        initializeMorale(unit, "100");
+                        MohawkAssert.Assert(false, "found a unit without MORALE initialization");
+                        initializeMorale(unit, DEFAULTMORALE);
                         return;
-                    }       
+                    }
                     moraleTurnUpdate(unit);
                 }
             }   
+        }
+        [HarmonyPatch(typeof(Game), "doTurn")]
+        static void Prefix(Game __instance)
+        {
+            foreach (Unit unit in __instance.getUnits())
+            {
+                if (unit.isTribe() && unit.isAlive() && unit.canDamage())
+                {
+                    if (string.IsNullOrEmpty(unit.getModVariable(RP)) || string.IsNullOrEmpty(unit.getModVariable(MORALE)))
+                    {
+                        MohawkAssert.Assert(false, "found a unit without MORALE initialization");
+                        initializeMorale(unit, DEFAULTMORALE);
+                        return;
+                    }
+                    moraleTurnUpdate(unit);
+                }
+            }
         }
 
         [HarmonyPatch(typeof(Unit))]
         public class UnitPatch
         {
             [HarmonyPatch(nameof(Unit.attackUnitOrCity), new Type[] { typeof(Tile), typeof(Player) })]
-            ///Testing moraleStr -- track moraleStr only for now
-
             static void Prefix(ref Unit __instance, ref Tile pToTile, Player pActingPlayer)
             {
                 //to do
@@ -87,20 +102,28 @@ namespace ModVariables
             // public virtual void setModVariable(string zIndex, string zNewValue)
             static void Postfix(ref Unit __instance, string zIndex, string zNewValue)
             {
-                if (zIndex == moraleStr)
+                switch (zIndex)
                 {
-                    setMorale(__instance, int.Parse(zNewValue), true); //TODO add error checking?
+                    case MORALE:
+                        setMorale(__instance, int.Parse(zNewValue), true); //TODO add error checking?
+                        break;
+                    case RP:
+                        //setRP();
+                        break;
                 }
+                
             }
+
             [HarmonyPatch(nameof(Unit.getModVariable))]
             //public virtual string getModVariable(string zIndex)
             static void Postfix(ref String __result, ref Unit __instance, string zIndex)
             {
                 try
                 {
-                    if (zIndex == rpStr) //RP is 10pts higher per level of unit, zero indexed
+                    if (zIndex == RP) //RP is 10pts higher per level of unit, zero indexed
                     {
-                        __result = (int.Parse(__result) + 10 * (__instance.getLevel() - 1)).ToString();
+                        __result = (int.Parse(__result) + (__instance.hasGeneral()? generalDelta : 0) + perLevel * (__instance.getLevel() - 1)).ToString(); //todo: set it in data and make it helptext breakdown friendly
+                        
                     }
                 }
                 catch (Exception)
@@ -112,7 +135,31 @@ namespace ModVariables
             //public virtual void start(Tile pTile, FamilyType eFamily)
             static void Prefix(ref Unit __instance)
             {
-                initializeMorale(__instance, "100");
+                if (__instance.canDamage())
+                    initializeMorale(__instance, DEFAULTMORALE);
+            }
+        }
+
+        [HarmonyPatch(typeof(HelpText))]
+        public class HelpPatch
+        {
+            [HarmonyPatch(nameof(HelpText.buildWidgetHelp))]
+            // public virtual TextBuilder buildWidgetHelp(TextBuilder builder, WidgetData pWidget, ClientManager pManager, bool bIncludeEncyclopediaFooter = true)
+            static void Postfix(ref TextBuilder builder, WidgetData pWidget, ClientManager pManager, ref HelpText __instance)
+            {
+                using (new UnityProfileScope("HelpText.buildWidgetHelp"))
+                {
+                    Player player = pManager.activePlayer();
+                    Game gameClient = pManager.GameClient;
+                    if (pWidget.GetWidgetType() == itemUnitMorale)
+                    {
+                        Unit pUnit = gameClient?.unit(pWidget.GetDataInt(0));
+                        if (pUnit != null)
+                        {
+                            buildUnitMoraleHelp(builder, pUnit, player, ref __instance);
+                        }
+                    }
+                }
             }
         }
 
@@ -124,42 +171,83 @@ namespace ModVariables
             static void Postfix(ref ClientUI __instance, ref IApplication ___APP, Unit pUnit)
 #pragma warning restore IDE0051 // Remove unused private members
             {
-
                 int unitID = pUnit.getID();
                 UIAttributeTag unitTag = ___APP.UserInterface.GetUIAttributeTag("Unit", unitID);
-               
-                unitTag.SetTEXT("Morale", __instance.TextManager, UIPatch.buildMoraleUnitLinkVariable(__instance.HelpText, pUnit));
-                unitTag.SetBool("Morale-IsActive", true);
-            }
 
-            private static TextVariable buildMoraleUnitLinkVariable(HelpText helpText, Unit pUnit)
-            {
-                using (new UnityProfileScope("HelpText.buildDefenseUnitLinkVariable"))
+                var txtvar = buildMoraleUnitLinkVariable(__instance.HelpText, pUnit);
+
+                if (pUnit.canDamage() && txtvar != null)
                 {
-                    int morale = int.Parse(pUnit.getModVariable(moraleStr));
-                    TextVariable value = helpText.concatenate(helpText.buildValueTextVariable(morale, 10), helpText.ModSettings.SpriteRepo?.GetInlineIconVariable(HUDIconTypes.CAPITAL));
-                    return helpText.buildLinkTextVariable(value, buildMoraleHelpText(pUnit), pUnit.getID().ToStringCached(), eLinkColor: colorizeMorale(morale, pUnit.game().infos())); 
+                    unitTag.SetTEXT("Morale", __instance.TextManager, txtvar);
+                    unitTag.SetBool("Morale-IsActive", true);   
+                }
+                else
+                    unitTag.SetBool("Morale-IsActive", false);
+            }
+        }
+
+        private static TextVariable buildMoraleUnitLinkVariable(HelpText helpText, Unit pUnit)
+        {
+                
+            if(!int.TryParse(pUnit.getModVariable(MORALE), out int morale))
+            {
+                return null;
+            }    
+            TextVariable value = helpText.concatenate(helpText.buildValueTextVariable(morale, 10), helpText.ModSettings.SpriteRepo?.GetInlineIconVariable(HUDIconTypes.CAPITAL));
+          
+            return helpText.buildLinkTextVariable(value, itemUnitMorale, pUnit.getID().ToStringCached(),eLinkColor: colorizeMorale(morale, pUnit.game().infos()));
+        }
+
+        
+        public static TextBuilder buildUnitMoraleHelp(TextBuilder builder, Unit pUnit, Player pActivePlayer, ref HelpText helpText)
+        {
+                
+            using (new UnityProfileScope("HelpText.buildUnitMoraleHelp"))
+            {
+                
+                var morale = helpText.buildValueTextVariable(int.Parse(pUnit.getModVariable(MORALE)), MORALE_DIVISOR);
+                Infos infos = pUnit.game().infos();
+                float restingPoint = float.Parse(pUnit.getModVariable(RP)) / MORALE_DIVISOR; //not doing additional calc, just saving it as a de facto string
+                
+                builder.AddTEXT("TEXT_HELPTEXT_UNIT_MORALE", morale);
+                using (builder.BeginScope(TextBuilder.ScopeType.BULLET))
+                {
+                    var eff = getMoraleEffect(pUnit);
+                    if (eff != EffectUnitType.NONE)
+                    {
+                        builder.Add(helpText.buildEffectUnitLinkVariable(eff));
+                    }
+                }
+                builder.AddTEXT("TEXT_HELPTEXT_UNIT_MORALE_REST_POINT", restingPoint);  
+                using (builder.BeginScope(TextBuilder.ScopeType.BULLET))
+                {
+                    builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(int.Parse(DEFAULTMORALE), iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_RP_BASE", true))) ;
+                    if (pUnit.hasGeneral())
+                    {
+                        builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(generalDelta, iMultiplier:MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_RP_GENERAL", true)));
+                    }
+                    if (pUnit.getLevel() > 1)
+                    {
+                        builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(pUnit.getLevel() - 1), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_RP_LEVEL")));
+                    }
+                    String unitSpecific = pUnit.getModVariable(RPEXTRA);
+                    if (!String.IsNullOrEmpty(unitSpecific))
+                    {
+                        builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(int.Parse(unitSpecific), iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_SPECIFIC")));
+                    }
                 }
             }
-
-            private static String buildMoraleHelpText(Unit pUnit)
-            {
-                StringBuilder moraleBreakdown = new StringBuilder();
-                moraleBreakdown.AppendLine("Current Morale: " + pUnit.getModVariable(moraleStr));
-                //todo: add additional info on mouseover helptext
-                moraleBreakdown.AppendLine("Morale Rest Point: " + pUnit.getModVariable(rpStr));
-                moraleBreakdown.AppendLine("Current effect:" + getMoraleEffect(pUnit));
-                return moraleBreakdown.ToString();
-            }
+            return builder;
+        }
 
             private static ColorType colorizeMorale(int val, Infos infos)
             {
                 switch (val)
                 {
                     case int n when (n < 50):
-                        return infos.Globals.COLOR_DANGER;
-                    case int n when (n >= 50 && n < 100):
                         return infos.Globals.COLOR_DAMAGE;
+                    case int n when (n >= 50 && n < 100):
+                        return infos.Globals.COLOR_HEALTH_LOW;
                     case int n when (n >= 100 && n < 150):
                         return infos.Globals.COLOR_HEALTH_HIGH;
                     case int n when (n >= 150):
@@ -167,48 +255,60 @@ namespace ModVariables
                     default: return infos.Globals.COLOR_WHITE;
                 }
             }
-        }
+        
 
-        public static void initializeMorale(Unit instance, string restingPoint)
+        public static void initializeMorale(Unit instance, string defaultRP)
         {
-            if (instance.getModVariable(rpStr) == null)
-                instance.setModVariable(rpStr, restingPoint); //change me to setMoraleRP
-            else
-                restingPoint = instance.getModVariable(rpStr);
-
-            if (!int.TryParse(restingPoint, out int iRP))
+            if (!int.TryParse(defaultRP, out int iRP))
                 MohawkAssert.Assert(false, "Morale Parsing failed at initialization");
-          
-            bool hasValue = int.TryParse(instance.getModVariable(moraleStr), out int curr);
-            setMorale(instance, hasValue? curr: iRP * 6 / 10);  //60% moraleStr at creation 
-          
+
+            String unitSpecifc = instance.getModVariable(RPEXTRA);
+            if (unitSpecifc == null)
+                instance.setModVariable(RP, defaultRP); //change me to setMoraleRP
+            else
+            {
+                iRP += int.Parse(unitSpecifc);
+                instance.setModVariable(RP, iRP.ToString());
+            }
+
+            bool hasValue = int.TryParse(instance.getModVariable(MORALEEXTRA), out int curr);
+            int baseMorale = iRP * 6 / 10;
+            setMorale(instance,  hasValue ? curr + baseMorale: baseMorale);  //60% MORALEEXTRA at creation 
         }
 
         public static void moraleTurnUpdate(Unit unit)
         {
-            if (!int.TryParse(unit.getModVariable(moraleStr), out int iMorale))
-                MohawkAssert.Assert(false, "Morale Parsing failed: " + unit.getModVariable(moraleStr));
-            if (!int.TryParse(unit.getModVariable(rpStr), out int moraleRP))
-                MohawkAssert.Assert(false, "Morale Resting Point Parsing failed: " + unit.getModVariable(rpStr));
+            if (!int.TryParse(unit.getModVariable(MORALE), out int iMorale))
+                MohawkAssert.Assert(false, "Morale Parsing failed: " + unit.getModVariable(MORALE));
+            if (!int.TryParse(unit.getModVariable(RP), out int iRP))
+                MohawkAssert.Assert(false, "Morale Resting Point Parsing failed: " + unit.getModVariable(RP));
 
-            if (unit.isHealPossibleTile(unit.tile(), true) && iMorale < moraleRP)
+            if (unit.isHealPossibleTile(unit.tile(), true) && iMorale < iRP)
             {
-                changeMorale(unit, Math.Min(moraleRP - iMorale, moraleRP / 10));   //10% recovery rate
+                changeMorale(unit, Math.Min(iRP - iMorale, iRP * recoveryPercent / 100));   //10% recovery rate
             }
-            else if (iMorale > moraleRP)
-                changeMorale(unit, Math.Min(-5, -unit.getDamage())); 
-
-            if (unit.getName().Contains("MACE"))
-            {
-                changeMorale(unit, unit.baseStrength() / 2);
-                MohawkAssert.Assert(false, String.Format("Debug: MACE morale jumps from {0} to {1}. ", iMorale, (unit.getModVariable(moraleStr))));
-            }
+            else if (iMorale > iRP)
+                changeMorale(unit, Math.Max(iRP - iMorale, -unit.getDamage() - recoveryPercent/2)); //magic number here
         }
 
+        public static int getMoraleRP(Unit unit)
+        {
+            String unitExtra = unit.getModVariable(RPEXTRA);
+            if (String.IsNullOrEmpty(unitExtra))
+            {
+                //TODO: CHANGE INIT. AND ALL DOWNSTREAM. DON'T INITIALIZE MORALE ANYMORE INTO THE MODVARIABLE; STORE IT IN A NEW MOD VARIABLE. WRITE GETTERS (HERE'S ONE) AND SETTLERS FOR THE 2 NEW MODVARIABLES
+            }
+            return -1;
+        }
+        public static void setMoraleRP(Unit unit, int morale)
+        {
+
+        }
         private static void changeMorale(Unit unit, int delta)
         {
-            if (!int.TryParse(unit.getModVariable(moraleStr), out int iMorale))
-                MohawkAssert.Assert(false, "Current Morale not an int: " + unit.getModVariable(moraleStr));
+          
+            if (!int.TryParse(unit.getModVariable(MORALE), out int iMorale))
+                MohawkAssert.Assert(false, "Current Morale not an int: " + unit.getModVariable(MORALE));
             if (delta != 0) 
                 setMorale(unit, iMorale + delta);
         }
@@ -216,9 +316,7 @@ namespace ModVariables
 
         private static void setMorale(Unit unit, int iMorale, bool bypassSaving = false)
         {
-           // MohawkAssert.Assert(iMorale > 110, String.Format("Debug: setting morale went to {0} from {1}. ", iMorale, (unit.getModVariable(moraleStr))));
-           
-            switch (iMorale)
+           switch (iMorale)
             {
                 case int n when(n < 50):
                     setMoraleEffect(unit, "EFFECTUNIT_WEAVERING");
@@ -234,7 +332,7 @@ namespace ModVariables
                     break;
             }
             if (!bypassSaving)
-                unit.setModVariable(moraleStr, iMorale.ToString());
+                unit.setModVariable(MORALE, iMorale.ToString());
         }
 
         private static EffectUnitType getMoraleEffect(Unit unit)
@@ -253,11 +351,10 @@ namespace ModVariables
             EffectUnitType moraleEff = eff == null? EffectUnitType.NONE: infos.getType <EffectUnitType>(eff);
             EffectUnitType oldMoraleEff = EffectUnitType.NONE;
             bool noChange = false;
-            EffectUnitClassType moraleSystem = infos.getType<EffectUnitClassType>("EFFECTUNITCLASS_MORALE");
 
             foreach (EffectUnitType eLoopEffectUnit in unit.getEffectUnits())
             {
-                if (infos.effectUnit(eLoopEffectUnit).meClass == moraleSystem)
+                if (infos.effectUnit(eLoopEffectUnit).meClass == infos.getType<EffectUnitClassType>("EFFECTUNITCLASS_MORALE"))
                 {
                     if (eLoopEffectUnit == moraleEff)
                         noChange = true;
@@ -272,8 +369,6 @@ namespace ModVariables
                 unit.changeEffectUnit(oldMoraleEff, -1, true);
             if (!noChange && moraleEff != EffectUnitType.NONE)
                 unit.changeEffectUnit(moraleEff, 1, false);
-
-        //    MohawkAssert.Assert(oldMoraleEff == moraleEff, String.Format("Debug: {1} Effect changed to {0} from {2}. ", eff, unit.getName(), oldMoraleEff));
         }
 
     }
