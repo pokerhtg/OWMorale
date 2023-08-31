@@ -10,6 +10,11 @@ using TenCrowns.GameCore;
 using TenCrowns.GameCore.Text;
 using UnityEngine;
 
+/**
+ * Features to do
+ * defection of low morale units
+ * 
+*/
 namespace ModVariables
 {
     public class ModVariablesModEntry : ModEntryPointAdapter
@@ -49,9 +54,12 @@ namespace ModVariables
         public const int MORALE_DIVISOR = 10;
         public static ItemType itemUnitMorale = (ItemType) 1000;
 
+        //morale update parameters
         public static int generalDelta = 50;
         public static int perLevel = 10;
-        public static int recoveryPercent = 10; 
+        public static int recoveryPercent = 10;
+        public static int moralePerKill = 20;
+        public static int deathDivisor = 5;
 
         [HarmonyPatch(typeof(Player), nameof(Player.doTurn))]
         static void Prefix(Player __instance)
@@ -67,7 +75,7 @@ namespace ModVariables
                         initializeMorale(unit, DEFAULTMORALE);
                         return;
                     }
-                    moraleTurnUpdate(unit);
+                    moraleTurnUpdate(unit, out _);
                 }
             }   
         }
@@ -84,7 +92,7 @@ namespace ModVariables
                         initializeMorale(unit, DEFAULTMORALE);
                         return;
                     }
-                    moraleTurnUpdate(unit);
+                    moraleTurnUpdate(unit, out _);
                 }
             }
         }
@@ -92,15 +100,60 @@ namespace ModVariables
         [HarmonyPatch(typeof(Unit))]
         public class UnitPatch
         {
+            [HarmonyPatch(nameof(Unit.kill))]
+            ///morale hit for friendly nearby units
+            static bool Prefix (Unit __instance)             
+            {
+                //morale blast
+                //TODO effectpreview this?
+                if (__instance == null)
+                    return false;
+                __instance.changeDamage(-__instance.getHP());
+                using (var listScoped = CollectionCache.GetListScoped<int>())
+                {  
+                    __instance.tile().getTilesInRange(3, listScoped.Value);
+                    
+                    foreach (int iLoopTile in listScoped.Value)
+                    {
+                        Tile pLoopTile = __instance.game().tile(iLoopTile);
+                        var friend = pLoopTile.defendingUnit();
+                        if (friend == null|| friend.getHP() < 1 || friend.getModVariable(MORALE) == null || friend == __instance)
+                            continue;
+                        if (__instance.getTeam() == friend.getTeam())
+                        {
+                            int distance = Math.Max(__instance.tile().distanceTile(pLoopTile), 1); //will treat same tile as adj
+                            if (!int.TryParse(__instance.getModVariable(RP), out int rp))
+                                rp = 0;
+                            int moraleHit = -rp / deathDivisor / distance;
+                            changeMorale(friend, moraleHit, true);
+                        }
+                    }
+                }
+                return true;
+            }
+
+            [HarmonyPatch("doXP")]
+            ///doxp is called only for combat xp; nonXP units still calls this. 
+            ///Morale boost for Killing a unit
+            static void Prefix(Unit __instance, int iKills, ref List<TileText> azTileTexts)
+            {
+                //Dynamic Units hacked iKills to be a xp defStruct, need to be handled separately
+                int killsEstimate = __instance.game().infos().Globals.COMBAT_BASE_XP      //10 for unmodded; 1 for DU
+                      * (1 + iKills) / 20;                                                //so about 1 kill in both is 20xp
+
+                changeMorale(__instance, killsEstimate * moralePerKill, true);
+            }
+
+
             [HarmonyPatch(nameof(Unit.attackUnitOrCity), new Type[] { typeof(Tile), typeof(Player) })]
             static void Prefix(ref Unit __instance, ref Tile pToTile, Player pActingPlayer)
             {
-                //to do
+                //todo? kills and death both handled elsewhere. Crit? push? 
             }
 
             [HarmonyPatch(nameof(Unit.setModVariable))]
             // public virtual void setModVariable(string zIndex, string zNewValue)
-            static void Postfix(ref Unit __instance, string zIndex, string zNewValue)
+            static void Prefix(ref Unit __instance, string zIndex, string zNewValue)
             {
                 switch (zIndex)
                 {
@@ -120,7 +173,7 @@ namespace ModVariables
             {
                 try
                 {
-                    if (zIndex == RP) //RP is 10pts higher per level of unit, zero indexed
+                    if (zIndex == RP) 
                     {
                         __result = (int.Parse(__result) + (__instance.hasGeneral()? generalDelta : 0) + perLevel * (__instance.getLevel() - 1)).ToString(); //todo: set it in data and make it helptext breakdown friendly
                         
@@ -128,7 +181,7 @@ namespace ModVariables
                 }
                 catch (Exception)
                 { //if not ready for this (e.g. game start), just skip it
-                  }
+                }
             }
             
             [HarmonyPatch(nameof(Unit.start))]
@@ -167,9 +220,7 @@ namespace ModVariables
         public class UIPatch
         {
             [HarmonyPatch("updateUnitInfo")]
-#pragma warning disable IDE0051 // Remove unused private members
             static void Postfix(ref ClientUI __instance, ref IApplication ___APP, Unit pUnit)
-#pragma warning restore IDE0051 // Remove unused private members
             {
                 int unitID = pUnit.getID();
                 UIAttributeTag unitTag = ___APP.UserInterface.GetUIAttributeTag("Unit", unitID);
@@ -218,6 +269,7 @@ namespace ModVariables
                         builder.Add(helpText.buildEffectUnitLinkVariable(eff));
                     }
                 }
+               
                 builder.AddTEXT("TEXT_HELPTEXT_UNIT_MORALE_REST_POINT", restingPoint);  
                 using (builder.BeginScope(TextBuilder.ScopeType.BULLET))
                 {
@@ -236,6 +288,38 @@ namespace ModVariables
                         builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(int.Parse(unitSpecific), iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_SPECIFIC")));
                     }
                 }
+                
+                var totalMoraleUpdate = moraleTurnUpdate(pUnit, out var why, true);
+                builder.AddTEXT("TEXT_HELPTEXT_UNIT_MORALE_DRIFT", helpText.buildSignedTextVariable(totalMoraleUpdate, iMultiplier: MORALE_DIVISOR));
+
+                using (builder.BeginScope(TextBuilder.ScopeType.BULLET))
+                {
+                    if (why[1] != 0)
+                    {
+                        builder.Add(helpText.concatenate(helpText.buildPercentTextValue(why[1]), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_MORALE_RECOVERY")));
+                    }
+                    
+                    if (why[3] != 0)
+                    {
+                        builder.Add(helpText.concatenate(helpText.buildPercentTextValue(why[3]), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_MORALE_DEF")));
+                    }
+                    
+                    if (why[2] != 0)
+                    {
+                        builder.Add(helpText.concatenate(helpText.buildPercentTextValue(why[2]), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_MORALE_DECAY")));
+                    }
+                    
+                    if (pUnit.isDamaged())
+                    {
+                        builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(why[0], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_LINK_HELP_IMPROVEMENT_BUILD_TURNS_DAMAGED", true)));
+                    }
+                    if (why[4]> -1)
+                    {
+                        builder.Add(helpText.buildColonSpaceOne(why[4], helpText.buildValueTextVariable(int.Parse("TEXT_HELPTEXT_UNIT_MORALE_CAP"), MORALE_DIVISOR)));
+                    }
+
+                }
+
             }
             return builder;
         }
@@ -251,7 +335,7 @@ namespace ModVariables
                     case int n when (n >= 100 && n < 150):
                         return infos.Globals.COLOR_HEALTH_HIGH;
                     case int n when (n >= 150):
-                        return infos.Globals.COLOR_IDLE; //todo: find a better color
+                        return infos.Globals.COLOR_HEALTH_MAX; //todo: find a better color
                     default: return infos.Globals.COLOR_WHITE;
                 }
             }
@@ -276,48 +360,112 @@ namespace ModVariables
             setMorale(instance,  hasValue ? curr + baseMorale: baseMorale);  //60% MORALEEXTRA at creation 
         }
 
-        public static void moraleTurnUpdate(Unit unit)
+        public static int moraleTurnUpdate(Unit unit, out List<int> explaination, bool test = false)
         {
             if (!int.TryParse(unit.getModVariable(MORALE), out int iMorale))
                 MohawkAssert.Assert(false, "Morale Parsing failed: " + unit.getModVariable(MORALE));
             if (!int.TryParse(unit.getModVariable(RP), out int iRP))
                 MohawkAssert.Assert(false, "Morale Resting Point Parsing failed: " + unit.getModVariable(RP));
 
+            explaination = new List<int> { 0,0,0,0, -1 }; //from damage, from recovery, from decay, defStruct, max
+            int change = -unit.getDamage();
+            explaination[0] = change;
             if (unit.isHealPossibleTile(unit.tile(), true) && iMorale < iRP)
             {
-                changeMorale(unit, Math.Min(iRP - iMorale, iRP * recoveryPercent / 100));   //10% recovery rate
+                int recovery = iRP * recoveryPercent / 100;
+                explaination[1] = recoveryPercent;
+                change += recovery;
+
+                var tile = unit.tile();
+                if (tile != null)
+                {
+                    int defStruct =  tile.hasCity() ? 100 : 0;
+                    defStruct += (tile.improvement()?.miDefenseModifierFriendly ?? 0 + tile.improvement()?.miDefenseModifier ?? 0);
+                    defStruct /= 10;
+                    explaination[3] = defStruct;
+                    change += defStruct * iRP / 100;
+                }
             }
             else if (iMorale > iRP)
-                changeMorale(unit, Math.Max(iRP - iMorale, -unit.getDamage() - recoveryPercent/2)); //magic number here
+            {
+                explaination[2] = -recoveryPercent / 2;//magic number here
+                explaination[2] = Math.Max(iRP - iMorale, explaination[2]); 
+                change += explaination[2]; 
+            }
+            int cap = Math.Min(iRP - iMorale, change);
+
+            if (cap > -1 && cap < change)
+            {
+                change = cap;
+                explaination[4] = cap;
+            }
+            if (!test)
+                changeMorale(unit, change);
+
+            return change;
         }
 
-        public static int getMoraleRP(Unit unit)
+       /** public static int getMoraleRP(Unit unit)
         {
             String unitExtra = unit.getModVariable(RPEXTRA);
             if (String.IsNullOrEmpty(unitExtra))
             {
-                //TODO: CHANGE INIT. AND ALL DOWNSTREAM. DON'T INITIALIZE MORALE ANYMORE INTO THE MODVARIABLE; STORE IT IN A NEW MOD VARIABLE. WRITE GETTERS (HERE'S ONE) AND SETTLERS FOR THE 2 NEW MODVARIABLES
-            }
+                    }
             return -1;
         }
         public static void setMoraleRP(Unit unit, int morale)
         {
 
         }
-        private static void changeMorale(Unit unit, int delta)
+       **/
+        private static void changeMorale(Unit unit, int delta, bool boradcast = false)
         {
           
             if (!int.TryParse(unit.getModVariable(MORALE), out int iMorale))
                 MohawkAssert.Assert(false, "Current Morale not an int: " + unit.getModVariable(MORALE));
-            if (delta != 0) 
-                setMorale(unit, iMorale + delta);
+            if (delta != 0)
+            {
+               
+                setMorale(unit, Math.Max(iMorale + delta, 0));
+                if (iMorale + delta < 1) //already dead
+                    return;
+                if (delta / MORALE_DIVISOR == 0 || unit.getHP() < 1) //unit could have died from morale-deletion
+                    return;
+                var msg = (delta / MORALE_DIVISOR).ToString("+#;-#") + " MP";
+                if (boradcast)
+                {
+                    SendTileTextAll(msg, unit.getTileID(), unit.game());
+                }
+                else if (unit.hasPlayer())
+                { 
+                    TileText tileText = new TileText(msg, unit.getTileID(), unit.getPlayer());
+                    unit.game().sendTileText(tileText);
+                }
+            }
         }
-
+        private static void SendTileTextAll(string v, int tileID, Game g)
+        {
+            for (PlayerType playerType = (PlayerType)0; playerType < g.getNumPlayers(); playerType++)
+            {
+                g.sendTileText(new TileText(v, tileID, playerType));
+            }
+        }
 
         private static void setMorale(Unit unit, int iMorale, bool bypassSaving = false)
         {
-           switch (iMorale)
+            if (unit == null || unit.getHP() <1)
+                return;
+
+            if (!bypassSaving) {
+                unit.setModVariable(MORALE, iMorale.ToString());
+                
+               }
+           
+            switch (iMorale)
             {
+                case int n when (n < 1):
+                    MoraleDeath(unit);
+                    break;
                 case int n when(n < 50):
                     setMoraleEffect(unit, "EFFECTUNIT_WEAVERING");
                     break;
@@ -331,8 +479,27 @@ namespace ModVariables
                     setMoraleEffect(unit, "EFFECTUNIT_AGGRESSIVE");
                     break;
             }
-            if (!bypassSaving)
-                unit.setModVariable(MORALE, iMorale.ToString());
+            
+        }
+
+        private static void MoraleDeath(Unit unit)
+        {
+
+            //animate running away, send tile text of disband
+            try
+            {
+
+            
+            SendTileTextAll("disband", unit.getTileID(), unit.game());
+            if (unit == null)
+                MohawkAssert.Assert(false, "null unit sentenced to morale death");
+            else 
+                unit.kill();
+            }
+            catch (Exception)
+            { //still having null pointers? I give up
+                MohawkAssert.Assert(false, "morale death failed");
+            }
         }
 
         private static EffectUnitType getMoraleEffect(Unit unit)
