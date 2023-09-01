@@ -11,8 +11,16 @@ using TenCrowns.GameCore.Text;
 using UnityEngine;
 
 /**
- * Features to do
- * defection of low morale units
+ Features to do                                             priority
+ * defection of low morale units                                9
+ * more morale effects                                          4
+ * skirmisher ??                                                6
+ * test compatiblity with rest of the dynamic mods              3
+ * DU + this means leveling up is too good. hmmm.               0
+ *         mod DU's hpMax to patch based on morale system
+ * MoraleBar mouseover                                          1
+ *  
+ * AI understanding of morale                                   8
  * 
 */
 namespace ModVariables
@@ -50,16 +58,23 @@ namespace ModVariables
         private const string RP = "CURR_REST_POINT_EXTRA";
         private const string MORALE = "CURR_MORALE";
 
-        public const string DEFAULTMORALE = "100";
+
+        public const int MAXTICK = 8; //morale bar's number of ticks
+        public const string DEFAULTRP = "70";
         public const int MORALE_DIVISOR = 10;
         public static ItemType itemUnitMorale = (ItemType) 1000;
+    //    public static ItemType itemMoraleHelp = (ItemType)1001;
 
         //morale update parameters
-        public static int generalDelta = 50;
+        public static int generalDelta = 50; //
         public static int perLevel = 10;
-        public static int recoveryPercent = 10;
+        public static int recoveryPercent = 5;
         public static int moralePerKill = 20;
-        public static int deathDivisor = 5;
+        public static int deathDivisor = 5; // this is 1/x = % RP damage at distance 1 
+        public static int perFamilyOpinion = 10;
+       
+        public static int MORALE_AT_FULL_BAR = 140;
+        public static int moralePerTick = MORALE_AT_FULL_BAR/MAXTICK;
 
         [HarmonyPatch(typeof(Player), nameof(Player.doTurn))]
         static void Prefix(Player __instance)
@@ -72,7 +87,7 @@ namespace ModVariables
                     if (string.IsNullOrEmpty(unit.getModVariable(RP)) || string.IsNullOrEmpty(unit.getModVariable(MORALE)))
                     {
                         MohawkAssert.Assert(false, "found a unit without MORALE initialization");
-                        initializeMorale(unit, DEFAULTMORALE);
+                        initializeMorale(unit, DEFAULTRP);
                         return;
                     }
                     moraleTurnUpdate(unit, out _);
@@ -89,7 +104,7 @@ namespace ModVariables
                     if (string.IsNullOrEmpty(unit.getModVariable(RP)) || string.IsNullOrEmpty(unit.getModVariable(MORALE)))
                     {
                         MohawkAssert.Assert(false, "found a unit without MORALE initialization");
-                        initializeMorale(unit, DEFAULTMORALE);
+                        initializeMorale(unit, DEFAULTRP);
                         return;
                     }
                     moraleTurnUpdate(unit, out _);
@@ -173,9 +188,12 @@ namespace ModVariables
             {
                 try
                 {
-                    if (zIndex == RP) 
+                    if (zIndex == RP && !string.IsNullOrEmpty(__result)) 
                     {
-                        __result = (int.Parse(__result) + (__instance.hasGeneral()? generalDelta : 0) + perLevel * (__instance.getLevel() - 1)).ToString(); //todo: set it in data and make it helptext breakdown friendly
+                        
+                       //calculated on the spot. TODO actually save and push changes to actions that changes it
+                        calculateRP(__instance, out int total);
+                        __result = total.ToString();
                         
                     }
                 }
@@ -183,13 +201,13 @@ namespace ModVariables
                 { //if not ready for this (e.g. game start), just skip it
                 }
             }
-            
+
             [HarmonyPatch(nameof(Unit.start))]
             //public virtual void start(Tile pTile, FamilyType eFamily)
             static void Prefix(ref Unit __instance)
             {
                 if (__instance.canDamage())
-                    initializeMorale(__instance, DEFAULTMORALE);
+                    initializeMorale(__instance, DEFAULTRP);
             }
         }
 
@@ -202,14 +220,13 @@ namespace ModVariables
             {
                 using (new UnityProfileScope("HelpText.buildWidgetHelp"))
                 {
-                    Player player = pManager.activePlayer();
                     Game gameClient = pManager.GameClient;
                     if (pWidget.GetWidgetType() == itemUnitMorale)
                     {
                         Unit pUnit = gameClient?.unit(pWidget.GetDataInt(0));
                         if (pUnit != null)
                         {
-                            buildUnitMoraleHelp(builder, pUnit, player, ref __instance);
+                            buildUnitMoraleHelp(builder, pUnit, ref __instance);
                         }
                     }
                 }
@@ -234,7 +251,93 @@ namespace ModVariables
                 }
                 else
                     unitTag.SetBool("Morale-IsActive", false);
+
+                unitTag = ___APP.UserInterface.GetUIAttributeTag("UnitWidget", unitID);
+                updateUnitMoraleBar(pUnit,unitTag, __instance.ColorManager);
             }
+
+          
+            private static void updateUnitMoraleBar(Unit pUnit, UIAttributeTag unitTag, ColorManager pManager)
+            {
+                using (var pipListScoped = CollectionCache.GetListScoped<ColorType>())
+                {
+                    List<ColorType> aeColors = pipListScoped.Value;
+
+                    string raw = pUnit.getModVariable(MORALE);
+                    bool showMoraleBar = getMoraleBarColors(pUnit, aeColors, 0);//pass in morale damage expected; death blast should do this? todo
+                    if (showMoraleBar)
+                    {
+                      
+                        int morale = int.Parse(raw);
+                      //  int iRP = int.Parse(pUnit.getModVariable(RP));
+                        for (int i = 0; i < aeColors.Count; ++i)
+                        {
+                            UIAttributeTag pipTag = unitTag.GetSubTag("-MoralePip", i);
+                            pipTag.SetKey("Color", pManager.GetColorHex(aeColors[i]));
+
+                        }
+                        unitTag.SetInt("Morale-Count", morale / moralePerTick);
+                        unitTag.SetInt("Morale-Max", MAXTICK); //max morale ticks
+
+                    }
+                    unitTag.SetBool("MoraleBar-IsActive", showMoraleBar);
+                }
+            }
+
+         
+
+            private static bool getMoraleBarColors(Unit unit, List<ColorType> aeColors, int damage)
+            {
+                if (String.IsNullOrEmpty(unit.getModVariable(MORALE)))
+                    return false;
+                var infos = unit.game().infos();
+                int morale = int.Parse(unit.getModVariable(MORALE));
+                
+                ColorType moraleColor = colorizeMorale(morale, infos, true); 
+                int currTicks = morale / moralePerTick;
+                int dmgTicks = currTicks - (morale - damage) / moralePerTick;
+
+                for (int i = 0; i < MAXTICK; i++)
+                {
+                    if (i == currTicks - dmgTicks) //damage preview; from this momennt on all bars are damaged
+                    {
+                        moraleColor = infos.Globals.COLOR_DAMAGE;
+                    }
+                    else if (i == 2 * MAXTICK - currTicks) //willing to do a double-loop to display up to 2x fullbar
+                    {
+                        moraleColor = colorizeMorale(morale, infos);
+                    }
+
+                    aeColors.Add((i < currTicks) ? moraleColor : infos.Globals.COLOR_FORTIFY_NONE);
+                }
+
+                return true;
+        }
+    }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="unit"></param>
+        /// <param name="sum"></param>
+        /// <returns>why: base, extra, general, level, familyOpinion</returns>
+        private static List<int> calculateRP(Unit unit, out int sum)
+        {
+            if (!int.TryParse(unit.getModVariable(RPEXTRA), out int extraRP))
+                extraRP = 0;
+
+            List<int> why = new List<int> {
+                    int.Parse(DEFAULTRP), 
+                    extraRP,
+                    unit.hasGeneral() ? generalDelta : 0,
+                    perLevel * (unit.getLevel() - 1),
+                    unit.hasFamilyOpinion() ? ((int)unit.getFamilyOpinion() - 3) * perFamilyOpinion : 0,
+            };
+            sum = 0;
+            for (int i = 0; i < why.Count; i++)
+                sum += why[i];
+
+            return why;
         }
 
         private static TextVariable buildMoraleUnitLinkVariable(HelpText helpText, Unit pUnit)
@@ -250,7 +353,7 @@ namespace ModVariables
         }
 
         
-        public static TextBuilder buildUnitMoraleHelp(TextBuilder builder, Unit pUnit, Player pActivePlayer, ref HelpText helpText)
+        public static TextBuilder buildUnitMoraleHelp(TextBuilder builder, Unit pUnit, ref HelpText helpText)
         {
                 
             using (new UnityProfileScope("HelpText.buildUnitMoraleHelp"))
@@ -269,23 +372,29 @@ namespace ModVariables
                         builder.Add(helpText.buildEffectUnitLinkVariable(eff));
                     }
                 }
-               
-                builder.AddTEXT("TEXT_HELPTEXT_UNIT_MORALE_REST_POINT", restingPoint);  
+
+                var whyRP = calculateRP(pUnit, out int sum); // why: base, extra, general, level, familyOpinion
+                builder.AddTEXT("TEXT_HELPTEXT_UNIT_MORALE_REST_POINT", (float)sum / MORALE_DIVISOR);  
                 using (builder.BeginScope(TextBuilder.ScopeType.BULLET))
                 {
-                    builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(int.Parse(DEFAULTMORALE), iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_RP_BASE", true))) ;
-                    if (pUnit.hasGeneral())
+
+                    builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(whyRP[0], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_RP_BASE", true))) ;
+                    if (whyRP[1] != 0)
                     {
-                        builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(generalDelta, iMultiplier:MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_RP_GENERAL", true)));
+                        builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(whyRP[1], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_SPECIFIC")));
                     }
-                    if (pUnit.getLevel() > 1)
+                    if (whyRP[2] != 0)
                     {
-                        builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(pUnit.getLevel() - 1), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_RP_LEVEL")));
+                        builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(whyRP[2], iMultiplier:MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_RP_GENERAL", true)));
                     }
-                    String unitSpecific = pUnit.getModVariable(RPEXTRA);
-                    if (!String.IsNullOrEmpty(unitSpecific))
+                    if (whyRP[3] != 0)
                     {
-                        builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(int.Parse(unitSpecific), iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_SPECIFIC")));
+                        builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(whyRP[3], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_RP_LEVEL")));
+                    }
+                    if (whyRP[4] != 0)
+                    {
+                        builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(whyRP[4], iMultiplier: MORALE_DIVISOR), 
+                            helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_RP_FAM_OPINION", helpText.TEXTVAR_TYPE(pUnit.familyOpinion().mName))));
                     }
                 }
                 
@@ -324,18 +433,20 @@ namespace ModVariables
             return builder;
         }
 
-            private static ColorType colorizeMorale(int val, Infos infos)
+            private static ColorType colorizeMorale(int val, Infos infos, bool capped = false)
             {
                 switch (val)
                 {
-                    case int n when (n < 50):
-                        return infos.Globals.COLOR_DAMAGE;
-                    case int n when (n >= 50 && n < 100):
+                    case int n when (n < 40):
                         return infos.Globals.COLOR_HEALTH_LOW;
-                    case int n when (n >= 100 && n < 150):
+                    case int n when (n >= 40 && n < 100):
                         return infos.Globals.COLOR_HEALTH_HIGH;
-                    case int n when (n >= 150):
-                        return infos.Globals.COLOR_HEALTH_MAX; //todo: find a better color
+                    case int n when (n >= 100 && n < 141):
+                        return infos.Globals.COLOR_HEALTH_MAX;
+                    case int n when (n > 141):
+                    if (capped)//return highest possible "good" color
+                        return infos.Globals.COLOR_HEALTH_MAX;
+                    return infos.getType<ColorType>("COLOR_OVERCONFIDENT"); //todo: find a better color
                     default: return infos.Globals.COLOR_WHITE;
                 }
             }
@@ -356,8 +467,8 @@ namespace ModVariables
             }
 
             bool hasValue = int.TryParse(instance.getModVariable(MORALEEXTRA), out int curr);
-            int baseMorale = iRP * 6 / 10;
-            setMorale(instance,  hasValue ? curr + baseMorale: baseMorale);  //60% MORALEEXTRA at creation 
+            int baseMorale = iRP * 8 / 10;//80% MORALEEXTRA at creation 
+            setMorale(instance,  hasValue ? curr + baseMorale: baseMorale);  
         }
 
         public static int moraleTurnUpdate(Unit unit, out List<int> explaination, bool test = false)
@@ -466,17 +577,26 @@ namespace ModVariables
                 case int n when (n < 1):
                     MoraleDeath(unit);
                     break;
-                case int n when(n < 50):
+                case int n when(n < 30):
+                    setMoraleEffect(unit, "EFFECTUNIT_SCATTERING");
+                    break;
+                case int n when (n >= 30 && n < 60):
                     setMoraleEffect(unit, "EFFECTUNIT_WEAVERING");
                     break;
-                case int n when (n >= 50 && n < 100):
-                    setMoraleEffect(unit, null);
+                case int n when (n >= 60 && n < 90):    
+                    setMoraleEffect(unit, "EFFECTUNIT_WEAKENED");
                     break;
-                case int n when (n >= 100 && n < 150):
+                case int n when (n >= 90 && n < 120):
                     setMoraleEffect(unit, "EFFECTUNIT_FRESH");
                     break;
-                case int n when (n >= 150):
+                case int n when (n >= 120 && n < 160):
+                    setMoraleEffect(unit, "EFFECTUNIT_EAGER");
+                    break;
+                case int n when (n >= 160 && n < 200):
                     setMoraleEffect(unit, "EFFECTUNIT_AGGRESSIVE");
+                    break;
+                case int n when (n >= 200):
+                    setMoraleEffect(unit, "EFFECTUNIT_BERSERK");
                     break;
             }
             
