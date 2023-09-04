@@ -13,7 +13,7 @@ using UnityEngine;
 /**
  Features to do                                             priority
  * defection of low morale units                                9
- * more morale effects                                          4
+ * more morale effects                                          -1
  * skirmisher ??                                                6
  * test compatiblity with rest of the dynamic mods              3
  * DU + this means leveling up is too good. hmmm.               0
@@ -146,6 +146,18 @@ namespace ModVariables
                 }
                 return true;
             }
+
+            [HarmonyPatch("getEnlistOnKillChance")]
+            static void Postfix (Unit __instance, ref int __result, Tile pAttackTile)
+            { 
+                if (int.TryParse(pAttackTile.defendingUnit()?.getModVariable(MORALE), out int morale))
+                {
+                    morale = 100;
+                }
+              
+                __result = __instance.game().infos().utils().range(__result + moraleEnlistChance(morale), 0, 75);
+            }
+
 
             [HarmonyPatch("doXP")]
             ///doxp is called only for combat xp; nonXP units still calls this. 
@@ -315,9 +327,12 @@ namespace ModVariables
         }
     }
 
-        /// <summary>
-        /// 
-        /// </summary>
+
+        private static int moraleEnlistChance(int morale)
+        {
+            return (100 - morale) / 4; //0.25% chance of enlist per mp, centered at 100
+        }
+
         /// <param name="unit"></param>
         /// <param name="sum"></param>
         /// <returns>why: base, extra, general, level, familyOpinion</returns>
@@ -352,18 +367,17 @@ namespace ModVariables
             return helpText.buildLinkTextVariable(value, itemUnitMorale, pUnit.getID().ToStringCached(),eLinkColor: colorizeMorale(morale, pUnit.game().infos()));
         }
 
-        
+        //Big morale helptext build out, showing morale, resting point, change each turn and associted breakdowns of each
         public static TextBuilder buildUnitMoraleHelp(TextBuilder builder, Unit pUnit, ref HelpText helpText)
         {
                 
             using (new UnityProfileScope("HelpText.buildUnitMoraleHelp"))
             {
-                
-                var morale = helpText.buildValueTextVariable(int.Parse(pUnit.getModVariable(MORALE)), MORALE_DIVISOR);
+
                 Infos infos = pUnit.game().infos();
-                float restingPoint = float.Parse(pUnit.getModVariable(RP)) / MORALE_DIVISOR; //not doing additional calc, just saving it as a de facto string
-                
-                builder.AddTEXT("TEXT_HELPTEXT_UNIT_MORALE", morale);
+
+                int morale = int.Parse(pUnit.getModVariable(MORALE));
+                builder.AddTEXT("TEXT_HELPTEXT_UNIT_MORALE", helpText.buildValueTextVariable(morale, MORALE_DIVISOR));
                 using (builder.BeginScope(TextBuilder.ScopeType.BULLET))
                 {
                     var eff = getMoraleEffect(pUnit);
@@ -371,6 +385,12 @@ namespace ModVariables
                     {
                         builder.Add(helpText.buildEffectUnitLinkVariable(eff));
                     }
+                    int enlistEff = moraleEnlistChance(morale);
+                    if (enlistEff != 0)
+                    {
+                        builder.Add(helpText.buildColonSpaceOne(helpText.buildPercentTextValue(enlistEff), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_MORALE_ENLIST", true)));
+                    }
+
                 }
 
                 var whyRP = calculateRP(pUnit, out int sum); // why: base, extra, general, level, familyOpinion
@@ -381,7 +401,7 @@ namespace ModVariables
                     builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(whyRP[0], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_RP_BASE", true))) ;
                     if (whyRP[1] != 0)
                     {
-                        builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(whyRP[1], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_SPECIFIC")));
+                        builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(whyRP[1], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_SPECIFIC", helpText.buildUnitTypeLinkVariable(pUnit.getType(), pUnit.game()))));
                     }
                     if (whyRP[2] != 0)
                     {
@@ -437,13 +457,13 @@ namespace ModVariables
             {
                 switch (val)
                 {
-                    case int n when (n < 40):
+                    case int n when (n < 50):
                         return infos.Globals.COLOR_HEALTH_LOW;
-                    case int n when (n >= 40 && n < 100):
+                    case int n when (n >= 50 && n < 100):
                         return infos.Globals.COLOR_HEALTH_HIGH;
-                    case int n when (n >= 100 && n < 141):
+                    case int n when (n >= 100 && n < 150):
                         return infos.Globals.COLOR_HEALTH_MAX;
-                    case int n when (n > 141):
+                    case int n when (n >= 150):
                     if (capped)//return highest possible "good" color
                         return infos.Globals.COLOR_HEALTH_MAX;
                     return infos.getType<ColorType>("COLOR_OVERCONFIDENT"); //todo: find a better color
@@ -499,9 +519,8 @@ namespace ModVariables
             }
             else if (iMorale > iRP)
             {
-                explaination[2] = -recoveryPercent / 2;//magic number here
-                explaination[2] = Math.Max(iRP - iMorale, explaination[2]); 
-                change += explaination[2]; 
+                explaination[2] = recoveryPercent * 2;//magic number here
+                change += explaination[2] * (iRP - iMorale) / 100;
             }
             int cap = Math.Min(iRP - iMorale, change);
 
