@@ -12,13 +12,13 @@ using UnityEngine;
 
 /**
  Features to do                                             priority
- * defection of low morale units                                9
+ * defection of low morale units                                -1
  * more morale effects                                          -1
  * skirmisher ??                                                6
  * test compatiblity with rest of the dynamic mods              3
- * DU + this means leveling up is too good. hmmm.               0
- *         mod DU's hpMax to patch based on morale system
- * MoraleBar mouseover                                          1
+ * DU + this means leveling up is too good. hmmm.               -1
+ *         mod DU's hpMax to patch based on morale system       waiting
+ * MoraleBar mouseover                                          1???
  *  
  * AI understanding of morale                                   8
  * 
@@ -123,7 +123,7 @@ namespace ModVariables
                 //TODO effectpreview this?
                 if (__instance == null)
                     return false;
-                __instance.changeDamage(-__instance.getHP());
+                __instance.changeDamage(-__instance.getHP()); //mark it as dying to avoid loops
                 using (var listScoped = CollectionCache.GetListScoped<int>())
                 {  
                     __instance.tile().getTilesInRange(3, listScoped.Value);
@@ -147,15 +147,21 @@ namespace ModVariables
                 return true;
             }
 
+            [HarmonyPatch(nameof(Unit.convert))]
+            static void Postfix(ref Unit __result)
+            //public virtual Unit convert(PlayerType ePlayer, TribeType eTribe, bool bEnlisted = false)
+            {
+                initializeMorale(__result, DEFAULTRP);
+            }
+
             [HarmonyPatch("getEnlistOnKillChance")]
             static void Postfix (Unit __instance, ref int __result, Tile pAttackTile)
             { 
-                if (int.TryParse(pAttackTile.defendingUnit()?.getModVariable(MORALE), out int morale))
+                if (!int.TryParse(pAttackTile.defendingUnit()?.getModVariable(MORALE), out int morale))
                 {
                     morale = 100;
                 }
-              
-                __result = __instance.game().infos().utils().range(__result + moraleEnlistChance(morale), 0, 75);
+                __result = __instance.game().infos().utils().range(__result + moraleEnlistChance(morale), 0, 100);
             }
 
 
@@ -243,6 +249,7 @@ namespace ModVariables
                     }
                 }
             }
+            
         }
 
         [HarmonyPatch(typeof(ClientUI))]
@@ -535,19 +542,6 @@ namespace ModVariables
             return change;
         }
 
-       /** public static int getMoraleRP(Unit unit)
-        {
-            String unitExtra = unit.getModVariable(RPEXTRA);
-            if (String.IsNullOrEmpty(unitExtra))
-            {
-                    }
-            return -1;
-        }
-        public static void setMoraleRP(Unit unit, int morale)
-        {
-
-        }
-       **/
         private static void changeMorale(Unit unit, int delta, bool boradcast = false)
         {
           
@@ -557,7 +551,7 @@ namespace ModVariables
             {
                
                 setMorale(unit, Math.Max(iMorale + delta, 0));
-                if (iMorale + delta < 1) //already dead
+                if (iMorale + delta < 1 || !unit.isAlive() || unit.getHP() < 1) //already dead
                     return;
                 if (delta / MORALE_DIVISOR == 0 || unit.getHP() < 1) //unit could have died from morale-deletion
                     return;
@@ -627,12 +621,7 @@ namespace ModVariables
             //animate running away, send tile text of disband
             try
             {
-
-            
-            SendTileTextAll("disband", unit.getTileID(), unit.game());
-            if (unit == null)
-                MohawkAssert.Assert(false, "null unit sentenced to morale death");
-            else 
+                SendTileTextAll("disband", unit.getTileID(), unit.game());
                 unit.kill();
             }
             catch (Exception)
