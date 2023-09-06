@@ -4,10 +4,11 @@ using Mohawk.SystemCore;
 using Mohawk.UIInterfaces;
 using System;
 using System.Collections.Generic;
+using TenCrowns.GameCore.Text;
+using static TenCrowns.GameCore.Text.TextExtensions;
 using TenCrowns.AppCore;
 using TenCrowns.ClientCore;
 using TenCrowns.GameCore;
-using TenCrowns.GameCore.Text;
 using UnityEngine;
 
 /**
@@ -20,12 +21,12 @@ using UnityEngine;
  *         mod DU's hpMax to patch based on morale system       waiting
  * MoraleBar mouseover                                          1???
  *  
- * AI understanding of morale                                   8
+ * AI understanding of morale                                   1
  * 
 */
-namespace ModVariables
+namespace MoraleSystem
 {
-    public class ModVariablesModEntry : ModEntryPointAdapter
+    public class MoraleEntry : ModEntryPointAdapter
     {
         public const string MY_HARMONY_ID = "harry.moraleSystem.patch";
         public static Harmony harmony;
@@ -59,25 +60,24 @@ namespace ModVariables
         private const string MORALE = "CURR_MORALE";
 
 
-        public const int MAXTICK = 8; //morale bar's number of ticks
-        public const string DEFAULTRP = "70";
+        public const int MAXTICK = 6; //morale bar's number of ticks
+        public const string DEFAULTRP = "80";
         public const int MORALE_DIVISOR = 10;
         public static ItemType itemUnitMorale = (ItemType) 1000;
-    //    public static ItemType itemMoraleHelp = (ItemType)1001;
 
         //morale update parameters
-        public static int generalDelta = 50; //
+        public static int generalDelta = 50; //RP boost if has general
         public static int perLevel = 10;
         public static int recoveryPercent = 5;
         public static int moralePerKill = 20;
         public static int deathDivisor = 5; // this is 1/x = % RP damage at distance 1 
         public static int perFamilyOpinion = 10;
        
-        public static int MORALE_AT_FULL_BAR = 140;
+        public static int MORALE_AT_FULL_BAR = 120;
         public static int moralePerTick = MORALE_AT_FULL_BAR/MAXTICK;
 
         [HarmonyPatch(typeof(Player), nameof(Player.doTurn))]
-        static void Prefix(Player __instance)
+        static void Postfix(Player __instance)
         {
             Game game = __instance.game();
              foreach (Unit unit in game.getUnits())
@@ -93,23 +93,6 @@ namespace ModVariables
                     moraleTurnUpdate(unit, out _);
                 }
             }   
-        }
-        [HarmonyPatch(typeof(Game), "doTurn")]
-        static void Prefix(Game __instance)
-        {
-            foreach (Unit unit in __instance.getUnits())
-            {
-                if (unit.isTribe() && unit.isAlive() && unit.canDamage())
-                {
-                    if (string.IsNullOrEmpty(unit.getModVariable(RP)) || string.IsNullOrEmpty(unit.getModVariable(MORALE)))
-                    {
-                        MohawkAssert.Assert(false, "found a unit without MORALE initialization");
-                        initializeMorale(unit, DEFAULTRP);
-                        return;
-                    }
-                    moraleTurnUpdate(unit, out _);
-                }
-            }
         }
 
         [HarmonyPatch(typeof(Unit))]
@@ -169,14 +152,32 @@ namespace ModVariables
             ///doxp is called only for combat xp; nonXP units still calls this. 
             ///Morale boost for Killing a unit
             static void Prefix(Unit __instance, int iKills, ref List<TileText> azTileTexts)
-            {
-                //Dynamic Units hacked iKills to be a xp defStruct, need to be handled separately
-                int killsEstimate = __instance.game().infos().Globals.COMBAT_BASE_XP      //10 for unmodded; 1 for DU
-                      * (1 + iKills) / 20;                                                //so about 1 kill in both is 20xp
-
-                changeMorale(__instance, killsEstimate * moralePerKill, true);
+            {              
+                int killsEstimate = moraleFromXP(__instance, iKills);
+                changeMorale(__instance, killsEstimate, true);
             }
 
+
+            [HarmonyPatch(nameof(Unit.changeDamage))]
+            //public virtual void changeDamage(int iChange, bool bNoKill = false)
+            static void Postfix(Unit __instance, int iChange, bool bNoKill = false)
+            {
+                if (__instance.getHP() < 1)
+                    return; 
+                if (int.TryParse(__instance.getModVariable(MORALE), out _))
+                    if (iChange > 1)
+                    {
+                        changeMorale(__instance, getMoraleDamage(iChange), false); //magic number
+                    }
+            }
+
+            [HarmonyPatch(nameof(Unit.attackDamagePreview))]
+            //public virtual int attackDamagePreview(Unit pFromUnit, Tile pMouseoverTile, Player pActingPlayer, bool bCheckHostile = true, bool bCheckKill = true)
+            static void Postfix(Unit __instance, ref int __result)
+            { 
+              //  if (__result != 0)
+                 //   updateUnitMoraleBar(__instance, __result);
+            }
 
             [HarmonyPatch(nameof(Unit.attackUnitOrCity), new Type[] { typeof(Tile), typeof(Player) })]
             static void Prefix(ref Unit __instance, ref Tile pToTile, Player pActingPlayer)
@@ -196,8 +197,7 @@ namespace ModVariables
                     case RP:
                         //setRP();
                         break;
-                }
-                
+                }               
             }
 
             [HarmonyPatch(nameof(Unit.getModVariable))]
@@ -248,13 +248,34 @@ namespace ModVariables
                         }
                     }
                 }
-            }
-            
+            }          
         }
 
         [HarmonyPatch(typeof(ClientUI))]
         public class UIPatch
         {
+            /**
+            [HarmonyPatch(nameof(ClientUI.updateUnitAttackPreviewSelection))]
+            static void Postfix(ref ClientUI __instance, ref IApplication ___APP, UIAttributeTag ___mSelectedPanel)
+            {
+                var ClientMgr = ___APP.GetClientManager();
+                Tile pMouseoverTile = ClientMgr.Selection.getAttackPreviewTile();
+                Unit pMouseoverUnit = ClientMgr.Selection.getAttackPreviewUnit();
+                Unit pSelectedUnit = ClientMgr.Selection.getSelectedUnit();
+                Tile pSelectedTile = pSelectedUnit.tile();
+
+                int ourMoraleChange = moraleFromXP(pSelectedUnit, 0) - pSelectedUnit.getCounterAttackDamage((pSelectedUnit.canDamageCity(pMouseoverTile)) ? null : pMouseoverUnit, pMouseoverTile);
+                if (!pSelectedUnit.canDamageCity(pMouseoverTile) && pMouseoverUnit != null)
+                {
+                    
+                    ___mSelectedPanel.SetKey("EnemyUnit-DamageMoralePreviewText", ourMoraleChange != 0 ? ClientMgr.HelpText.TEXT("TEXT_GAME_UNIT_ATTACK_MORALE_DAMAGE", ClientMgr.HelpText.buildSignedTextVariable(ourMoraleChange, iMultiplier:MORALE_DIVISOR)) : "");
+
+                }
+
+                ___mSelectedPanel.SetBool("EnemyUnit-DamageMoralePreviewText-IsActive", ourMoraleChange != 0);
+
+            }
+            **/
             [HarmonyPatch("updateUnitInfo")]
             static void Postfix(ref ClientUI __instance, ref IApplication ___APP, Unit pUnit)
             {
@@ -271,70 +292,64 @@ namespace ModVariables
                 else
                     unitTag.SetBool("Morale-IsActive", false);
 
-                unitTag = ___APP.UserInterface.GetUIAttributeTag("UnitWidget", unitID);
-                updateUnitMoraleBar(pUnit,unitTag, __instance.ColorManager);
+            updateUnitMoraleBar(pUnit);
             }
-
-          
-            private static void updateUnitMoraleBar(Unit pUnit, UIAttributeTag unitTag, ColorManager pManager)
-            {
-                using (var pipListScoped = CollectionCache.GetListScoped<ColorType>())
-                {
-                    List<ColorType> aeColors = pipListScoped.Value;
-
-                    string raw = pUnit.getModVariable(MORALE);
-                    bool showMoraleBar = getMoraleBarColors(pUnit, aeColors, 0);//pass in morale damage expected; death blast should do this? todo
-                    if (showMoraleBar)
-                    {
-                      
-                        int morale = int.Parse(raw);
-                      //  int iRP = int.Parse(pUnit.getModVariable(RP));
-                        for (int i = 0; i < aeColors.Count; ++i)
-                        {
-                            UIAttributeTag pipTag = unitTag.GetSubTag("-MoralePip", i);
-                            pipTag.SetKey("Color", pManager.GetColorHex(aeColors[i]));
-
-                        }
-                        unitTag.SetInt("Morale-Count", morale / moralePerTick);
-                        unitTag.SetInt("Morale-Max", MAXTICK); //max morale ticks
-
-                    }
-                    unitTag.SetBool("MoraleBar-IsActive", showMoraleBar);
-                }
-            }
-
-         
-
-            private static bool getMoraleBarColors(Unit unit, List<ColorType> aeColors, int damage)
-            {
-                if (String.IsNullOrEmpty(unit.getModVariable(MORALE)))
-                    return false;
-                var infos = unit.game().infos();
-                int morale = int.Parse(unit.getModVariable(MORALE));
-                
-                ColorType moraleColor = colorizeMorale(morale, infos, true); 
-                int currTicks = morale / moralePerTick;
-                int dmgTicks = currTicks - (morale - damage) / moralePerTick;
-
-                for (int i = 0; i < MAXTICK; i++)
-                {
-                    if (i == currTicks - dmgTicks) //damage preview; from this momennt on all bars are damaged
-                    {
-                        moraleColor = infos.Globals.COLOR_DAMAGE;
-                    }
-                    else if (i == 2 * MAXTICK - currTicks) //willing to do a double-loop to display up to 2x fullbar
-                    {
-                        moraleColor = colorizeMorale(morale, infos);
-                    }
-
-                    aeColors.Add((i < currTicks) ? moraleColor : infos.Globals.COLOR_FORTIFY_NONE);
-                }
-
-                return true;
         }
-    }
 
+        private static bool getMoraleBarColors(Unit unit, List<ColorType> aeColors, int damage)
+        {
+            if (String.IsNullOrEmpty(unit.getModVariable(MORALE)))
+                return false;
+            var infos = unit.game().infos();
+            int morale = int.Parse(unit.getModVariable(MORALE));
 
+            ColorType moraleColor = colorizeMorale(morale, infos, true);
+            int currTicks = morale / moralePerTick;
+            int dmgTicks = currTicks - (morale - damage) / moralePerTick;
+
+            for (int i = 0; i < MAXTICK; i++)
+            {
+                if (i == currTicks - dmgTicks) //damage preview; from this momennt on all bars are damaged
+                {
+                    moraleColor = infos.Globals.COLOR_DAMAGE;
+                }
+                else if (i == 2 * MAXTICK - currTicks) //willing to do a double-loop to display up to 2x fullbar
+                {
+                    moraleColor = colorizeMorale(morale, infos);
+                }
+
+                aeColors.Add((i < currTicks) ? moraleColor : infos.Globals.COLOR_FORTIFY_NONE);
+            }
+
+            return true;
+        }
+
+        private static void updateUnitMoraleBar(Unit pUnit, int dmg = 0)
+        {
+            using (var pipListScoped = CollectionCache.GetListScoped<ColorType>())
+            {
+                List<ColorType> aeColors = pipListScoped.Value;
+                var unitTag = pUnit.game().App.UserInterface.GetUIAttributeTag("UnitWidget", pUnit.getID());
+                string raw = pUnit.getModVariable(MORALE);
+                bool showMoraleBar = getMoraleBarColors(pUnit, aeColors, dmg);//pass in morale damage expected; death blast should do this? todo
+                if (showMoraleBar)
+                {
+
+                    int morale = int.Parse(raw);
+                    //  int iRP = int.Parse(pUnit.getModVariable(RP));
+                    for (int i = 0; i < aeColors.Count; ++i)
+                    {
+                        UIAttributeTag pipTag = unitTag.GetSubTag("-MoralePip", i);
+                        pipTag.SetKey("Color", pUnit.game().modSettings().ColorManager.GetColorHex(aeColors[i]));
+
+                    }
+                    unitTag.SetInt("Morale-Count", morale / moralePerTick);
+                    unitTag.SetInt("Morale-Max", MAXTICK); //max morale ticks
+
+                }
+                unitTag.SetBool("MoraleBar-IsActive", showMoraleBar);
+            }
+        }
         private static int moraleEnlistChance(int morale)
         {
             return (100 - morale) / 4; //0.25% chance of enlist per mp, centered at 100
@@ -382,7 +397,6 @@ namespace ModVariables
             {
 
                 Infos infos = pUnit.game().infos();
-
                 int morale = int.Parse(pUnit.getModVariable(MORALE));
                 builder.AddTEXT("TEXT_HELPTEXT_UNIT_MORALE", helpText.buildValueTextVariable(morale, MORALE_DIVISOR));
                 using (builder.BeginScope(TextBuilder.ScopeType.BULLET))
@@ -451,11 +465,10 @@ namespace ModVariables
                     }
                     if (why[4]> -1)
                     {
-                        builder.Add(helpText.buildColonSpaceOne(why[4], helpText.buildValueTextVariable(int.Parse("TEXT_HELPTEXT_UNIT_MORALE_CAP"), MORALE_DIVISOR)));
+                        builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(why[4], iMultiplier: MORALE_DIVISOR), 
+                            helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_MORALE_CAP", helpText.buildSignedTextVariable(sum, false, MORALE_DIVISOR))));
                     }
-
                 }
-
             }
             return builder;
         }
@@ -464,13 +477,13 @@ namespace ModVariables
             {
                 switch (val)
                 {
-                    case int n when (n < 50):
+                    case int n when (n < 40):
                         return infos.Globals.COLOR_HEALTH_LOW;
-                    case int n when (n >= 50 && n < 100):
+                    case int n when (n >= 40 && n < 80):
                         return infos.Globals.COLOR_HEALTH_HIGH;
-                    case int n when (n >= 100 && n < 150):
+                    case int n when (n >= 80 && n < 140):
                         return infos.Globals.COLOR_HEALTH_MAX;
-                    case int n when (n >= 150):
+                    case int n when (n >= 140):
                     if (capped)//return highest possible "good" color
                         return infos.Globals.COLOR_HEALTH_MAX;
                     return infos.getType<ColorType>("COLOR_OVERCONFIDENT"); //todo: find a better color
@@ -506,7 +519,7 @@ namespace ModVariables
                 MohawkAssert.Assert(false, "Morale Resting Point Parsing failed: " + unit.getModVariable(RP));
 
             explaination = new List<int> { 0,0,0,0, -1 }; //from damage, from recovery, from decay, defStruct, max
-            int change = -unit.getDamage();
+            int change = -unit.getDamage()/2;
             explaination[0] = change;
             if (unit.isHealPossibleTile(unit.tile(), true) && iMorale < iRP)
             {
@@ -517,9 +530,9 @@ namespace ModVariables
                 var tile = unit.tile();
                 if (tile != null)
                 {
-                    int defStruct =  tile.hasCity() ? 100 : 0;
-                    defStruct += (tile.improvement()?.miDefenseModifierFriendly ?? 0 + tile.improvement()?.miDefenseModifier ?? 0);
+                    int defStruct = (tile.improvement()?.miDefenseModifierFriendly ?? 0 + tile.improvement()?.miDefenseModifier ?? 0);
                     defStruct /= 10;
+                    defStruct += tile.hasCity() ? recoveryPercent : 0; //city grants double base recovery
                     explaination[3] = defStruct;
                     change += defStruct * iRP / 100;
                 }
@@ -548,8 +561,7 @@ namespace ModVariables
             if (!int.TryParse(unit.getModVariable(MORALE), out int iMorale))
                 MohawkAssert.Assert(false, "Current Morale not an int: " + unit.getModVariable(MORALE));
             if (delta != 0)
-            {
-               
+            {       
                 setMorale(unit, Math.Max(iMorale + delta, 0));
                 if (iMorale + delta < 1 || !unit.isAlive() || unit.getHP() < 1) //already dead
                     return;
@@ -567,6 +579,7 @@ namespace ModVariables
                 }
             }
         }
+
         private static void SendTileTextAll(string v, int tileID, Game g)
         {
             for (PlayerType playerType = (PlayerType)0; playerType < g.getNumPlayers(); playerType++)
@@ -580,10 +593,10 @@ namespace ModVariables
             if (unit == null || unit.getHP() <1)
                 return;
 
-            if (!bypassSaving) {
-                unit.setModVariable(MORALE, iMorale.ToString());
-                
-               }
+            if (!bypassSaving) 
+            {
+                unit.setModVariable(MORALE, iMorale.ToString());  
+            }
            
             switch (iMorale)
             {
@@ -611,13 +624,17 @@ namespace ModVariables
                 case int n when (n >= 200):
                     setMoraleEffect(unit, "EFFECTUNIT_BERSERK");
                     break;
-            }
-            
+            }     
+        }
+
+
+        private static int getMoraleDamage(int dmg)
+        {
+            return -3 * (dmg - 1);
         }
 
         private static void MoraleDeath(Unit unit)
         {
-
             //animate running away, send tile text of disband
             try
             {
@@ -628,6 +645,14 @@ namespace ModVariables
             { //still having null pointers? I give up
                 MohawkAssert.Assert(false, "morale death failed");
             }
+        }
+
+        //Dynamic Units hacked iKills to be a xp defStruct, need to be handled separately
+        //so about 1 kill in both is 20xp
+        private static int moraleFromXP(Unit unit, int iKills)
+        {
+            return unit.game().infos().Globals.COMBAT_BASE_XP      //10 for unmodded; 1 for DU
+                   * (1 + iKills) / 20 * moralePerKill;
         }
 
         private static EffectUnitType getMoraleEffect(Unit unit)
@@ -660,8 +685,11 @@ namespace ModVariables
                     }
                 } 
             }
-            if (oldMoraleEff != EffectUnitType.NONE)
+            if (oldMoraleEff != EffectUnitType.NONE) { 
+                if (infos.effectUnit(oldMoraleEff).meEffectUnitUnlock != EffectUnitType.NONE)
+                    unit.changeEffectUnit(infos.effectUnit(oldMoraleEff).meEffectUnitUnlock, -1, true);
                 unit.changeEffectUnit(oldMoraleEff, -1, true);
+            }
             if (!noChange && moraleEff != EffectUnitType.NONE)
                 unit.changeEffectUnit(moraleEff, 1, false);
         }
