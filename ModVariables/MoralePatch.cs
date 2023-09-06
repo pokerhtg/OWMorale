@@ -296,6 +296,72 @@ namespace MoraleSystem
             }
         }
 
+        [HarmonyPatch(typeof(Unit.UnitAI))]
+        public class AIPatch
+        {
+            [HarmonyPatch(nameof(Unit.UnitAI.isBelowHealthPercent))]
+            ///public virtual bool isBelowHealthPercent(int iPercent)
+            ///factoring low morale in "low heal" definition
+            static bool Prefix(ref Unit ___unit, ref bool __result, int iPercent)
+            {
+                if (!int.TryParse(___unit.getModVariable(MORALE), out int morale))
+                {
+                    return true;
+                }
+                //not counting the last 30 morale for emergency, is morale lower than threshhold? 
+                __result = 100 * (morale - 30) < int.Parse(___unit.getModVariable(RP)) * iPercent;
+                return !__result;
+            }
+
+            [HarmonyPatch(nameof(Unit.UnitAI.retreatTileValue))]
+            //public virtual long retreatTileValue(Tile pTile)
+            static void Postfix(ref Unit.UnitAI __instance, ref long __result, Tile pTile)
+            {
+                if (__instance.canHeal(pTile)) //since can heal means can also boost morale, it is now more important 
+                {
+                    __result *= 2;
+                }
+            }
+
+            [HarmonyPatch("doHeal")]
+            //protected virtual bool doHeal(PathFinder pPathfinder, bool bRetreat)
+            static bool Prefix(ref Unit.UnitAI __instance, ref Unit ___unit, ref bool __result)
+            {
+                if (isMoralelyBankrupt(___unit, 30))
+                {
+                    if (!___unit.isDamaged() && __instance.canHeal(___unit.tile()))
+                    {
+                        //not damaged, but need morale boost
+                        ___unit.setPass(true);
+                        __result = true;
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            [HarmonyPatch(nameof(Unit.UnitAI.isInGraveDanger))]
+            static void Postfix(ref Unit ___unit, ref bool __result)
+            //public virtual bool isInGraveDanger(Tile pTile, bool bAfterAttack, int iExtraDamage = 0)
+            {
+                if (__result)
+                    return;
+               
+                __result = isMoralelyBankrupt(___unit, 20); // morale, int.Parse(___unit.getModVariable(RP)));
+                   
+                    
+            }
+
+            private static bool isMoralelyBankrupt(Unit unit, int bar)
+            {
+                if (!int.TryParse(unit.getModVariable(MORALE), out int morale))
+                {
+                    return false; //no morale, can't bankrupt
+                }
+                return (morale - bar) * 100 / int.Parse(unit.getModVariable(RP)) < bar; //morale, not counting the last BAR, is less than BAR percent of RP
+            }
+        }
+
         private static bool getMoraleBarColors(Unit unit, List<ColorType> aeColors, int damage)
         {
             if (String.IsNullOrEmpty(unit.getModVariable(MORALE)))
