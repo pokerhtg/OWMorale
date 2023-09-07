@@ -158,9 +158,9 @@ namespace MoraleSystem
             }
 
 
-            [HarmonyPatch(nameof(Unit.changeDamage))]
+            [HarmonyPatch("changeDamageText")]
             //public virtual void changeDamage(int iChange, bool bNoKill = false)
-            static void Postfix(Unit __instance, int iChange, bool bNoKill = false)
+            static void Postfix(Unit __instance, int iChange)
             {
                 if (__instance.getHP() < 1)
                     return; 
@@ -345,11 +345,17 @@ namespace MoraleSystem
             //public virtual bool isInGraveDanger(Tile pTile, bool bAfterAttack, int iExtraDamage = 0)
             {
                 if (__result)
+                {
+                    if (!int.TryParse(___unit.getModVariable(MORALE), out int morale))
+                        {
+                            return; //no morale, do base logic
+                        }
+                    else if (morale +___unit.getHP() * 10 > 20) //magic number; morale + HP is pretty high
+                       __result = false;
                     return;
-               
-                __result = isMoralelyBankrupt(___unit, 20); // morale, int.Parse(___unit.getModVariable(RP)));
-                   
-                    
+                }
+                            
+                __result = isMoralelyBankrupt(___unit, 20); // morale, int.Parse(___unit.getModVariable(RP)));                                  
             }
 
             private static bool isMoralelyBankrupt(Unit unit, int bar)
@@ -449,9 +455,15 @@ namespace MoraleSystem
             if(!int.TryParse(pUnit.getModVariable(MORALE), out int morale))
             {
                 return null;
-            }    
-            TextVariable value = helpText.concatenate(helpText.buildValueTextVariable(morale, 10), helpText.ModSettings.SpriteRepo?.GetInlineIconVariable(HUDIconTypes.CAPITAL));
-          
+            }
+
+            int mchange = moraleTurnUpdate(pUnit, out _, true);
+            TextVariable value = helpText.buildValueTextVariable(morale, MORALE_DIVISOR);
+            if (mchange != 0)
+                value = helpText.concatenate(value, helpText.buildColorTextSignedVariable(mchange, iMultiplier: MORALE_DIVISOR));
+
+            value = helpText.concatenate(value, helpText.ModSettings.SpriteRepo?.GetInlineIconVariable(HUDIconTypes.CAPITAL));
+
             return helpText.buildLinkTextVariable(value, itemUnitMorale, pUnit.getID().ToStringCached(),eLinkColor: colorizeMorale(morale, pUnit.game().infos()));
         }
 
@@ -525,7 +537,7 @@ namespace MoraleSystem
                         builder.Add(helpText.concatenate(helpText.buildPercentTextValue(why[2]), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_MORALE_DECAY")));
                     }
                     
-                    if (pUnit.isDamaged())
+                    if (why[0] != 0)
                     {
                         builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(why[0], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_LINK_HELP_IMPROVEMENT_BUILD_TURNS_DAMAGED", true)));
                     }
@@ -605,8 +617,8 @@ namespace MoraleSystem
             }
             else if (iMorale > iRP)
             {
-                explaination[2] = recoveryPercent * 2;//magic number here
-                change += explaination[2] * (iRP - iMorale) / 100;
+                explaination[2] = -recoveryPercent * 2;//magic number here
+                change -= explaination[2] * (iRP - iMorale) / 100;
             }
             int cap = Math.Min(iRP - iMorale, change);
 
