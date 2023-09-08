@@ -66,10 +66,10 @@ namespace MoraleSystem
         public static ItemType itemUnitMorale = (ItemType) 1000;
 
         //morale update parameters
-        public static int generalDelta = 50; //RP boost if has general
+        public static int generalDelta = 40; //RP boost if has general
         public static int perLevel = 10;
         public static int recoveryPercent = 5;
-        public static int moralePerKill = 15;
+        public static int moralePer100xp = 50;
         public static int deathDivisor = 5; // this is 1/x = % RP damage at distance 1 
         public static int perFamilyOpinion = 10;
        
@@ -128,11 +128,11 @@ namespace MoraleSystem
                 if (__instance == null)
                     return false;
                
-                if (__instance.getHP() < 1)
+                if (string.IsNullOrEmpty(__instance.getModVariable(RP)))
                     return true; //already marked dead, no need to kill it again
                 if (debug)
                     Debug.Log("killing " + __instance.getID() + ", with " + __instance.getHP() + " hp left");
-                __instance.changeDamage(__instance.getHP(), false); //mark it as dying to avoid loops
+                __instance.setModVariable(RP, null); //mark it as dying to avoid loops
                 try
                 {
                     using (var listScoped = CollectionCache.GetListScoped<int>())
@@ -145,7 +145,7 @@ namespace MoraleSystem
                             if (pLoopTile == null)
                                 continue;
                             var friend = pLoopTile.defendingUnit();
-                            if (friend == null|| friend.getHP() < 1 || friend.getModVariable(MORALE) == null || friend == __instance)
+                            if (friend == null|| friend.getHP() < 1 || friend.getModVariable(MORALE) == null || friend == __instance || string.IsNullOrEmpty(friend.getModVariable(RP)))
                                 continue;
                             if (__instance.getTeam() == friend.getTeam())
                             {
@@ -187,7 +187,7 @@ namespace MoraleSystem
                 if (debug)
                     Debug.Log("did xp");
             }
-
+            
             [HarmonyPatch(nameof(Unit.attackUnitOrCity), new Type[] { typeof(Tile), typeof(Player) })]
             static void Prefix(ref Tile pToTile, out Unit __state)
             {
@@ -199,10 +199,10 @@ namespace MoraleSystem
                 if (debug)
                     Debug.Log("changing morale of the defender");
 
-                if (__state != null && __state != __instance && __state.isAlive() && __state.getHP() > 0)
+                if (__state != null  && __state.isAlive() && __state.getHP() > 0 && string.IsNullOrEmpty(__state.getModVariable(RP)))
                     inflictBattleMoraleDamage(ref __state, __instance.attackUnitDamage(__instance.tile(), __state, false)); //just an estimate
             }
-
+            
             private static void inflictBattleMoraleDamage(ref Unit target, int iChange)
             {
                 if (target.getHP() < 1)
@@ -212,7 +212,7 @@ namespace MoraleSystem
                 if (int.TryParse(target.getModVariable(MORALE), out _))
                     if (iChange > 1)
                     {
-                        changeMorale(target, getMoraleDamage(iChange), false); //magic number
+                        changeMorale(target, getMoraleDamage(iChange), false);
                     }  
             }
 
@@ -667,7 +667,7 @@ namespace MoraleSystem
             }
             else if (iMorale > iRP)
             {
-                explaination[2] = -recoveryPercent * 2;//magic number here
+                explaination[2] = -recoveryPercent * 3;//magic number here
                 change -= explaination[2] * (iRP - iMorale) / 100;
             }
             int cap = Math.Min(iRP - iMorale, change);
@@ -758,7 +758,7 @@ namespace MoraleSystem
 
         private static int getMoraleDamage(int dmg)
         {
-            return -3 * (dmg - 1);
+            return -3 * (dmg - 1) * dmg > 10 ? 2: 1;
         }
 
         private static void MoraleDeath(Unit unit)
@@ -782,7 +782,7 @@ namespace MoraleSystem
         private static int moraleFromXP(Unit unit, int iKills)
         {
             return unit.game().infos().Globals.COMBAT_BASE_XP      //10 for unmodded; 1 for DU
-                   * (1 + iKills) * moralePerKill / 20;
+                   * (1 + iKills) * moralePer100xp / 100;
         }
 
         private static EffectUnitType getMoraleEffect(Unit unit)
