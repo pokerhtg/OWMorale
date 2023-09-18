@@ -72,7 +72,7 @@ namespace MoraleSystem
         public static int moralePerKill = 30;
         public static int friendDeathMoraleImpact = -25; 
         public static int perFamilyOpinion = 10;
-        private static int getMoraleDamage(int dmg) => -3 * (dmg - 1) * (dmg > 9 ? 2 : 1);
+        private static int getMoraleDamage(int dmg) => -3 * (dmg - 2) * (dmg > 9 ? 2 : 1);
 
         public static int MORALE_AT_FULL_BAR = 126;
         public static int moralePerTick = MORALE_AT_FULL_BAR/MAXTICK;
@@ -81,7 +81,8 @@ namespace MoraleSystem
         static void Postfix(Player __instance)
         {
             Game game = __instance.game();
-            foreach (Unit unit in game.getUnits())
+            
+            foreach (Unit unit in game.getUnits().ToSet<Unit>())
             {
                 if (debug)
                     Debug.Log("looping in doTurn");
@@ -97,18 +98,14 @@ namespace MoraleSystem
                 }
             }   
         }
+
         [HarmonyPatch(typeof(Tribe), nameof(Tribe.doTurn))]
         static void Postfix(Tribe __instance)
         {
             using (var unitList = CollectionCache.GetListScoped<int>())
             {
-                //deepcopy
-                List<int> aiUnits = unitList.Value;
-                foreach (int iUnitID in __instance.getUnits())
-                {
-                    aiUnits.Add(iUnitID);
-                }
-                foreach (int iUnitID in aiUnits)
+              
+                foreach (int iUnitID in __instance.getUnits().ToSet())
                 {
                     var unit = __instance.game().unit(iUnitID);
                     if (unit.canDamage())
@@ -123,6 +120,13 @@ namespace MoraleSystem
                 }
             }
         }
+
+        [HarmonyPatch(typeof(City), nameof(City.doRebelUnit))]
+        static void Postfix(ref Unit __result)
+        {
+            initializeMorale(__result, DEFAULTRP, 160);
+        }
+
 
 
         [HarmonyPatch(typeof(Unit))]
@@ -231,7 +235,7 @@ namespace MoraleSystem
 
             [HarmonyPatch(nameof(Unit.setModVariable))]
             // public virtual void setModVariable(string zIndex, string zNewValue)
-            static void Prefix(ref Unit __instance, string zIndex, string zNewValue)
+            static bool Prefix(ref Unit __instance, string zIndex, string zNewValue)
             {
                 if (debug)
                     Debug.Log("setting " + zIndex);
@@ -240,10 +244,12 @@ namespace MoraleSystem
                     case MORALE:
                         setMorale(__instance, int.Parse(zNewValue), true); //TODO add error checking?
                         break;
-                    case RP:
-                        //setRP();
+                    case RPEXTRA:
+                        if (!string.IsNullOrEmpty(__instance.getModVariable(RPEXTRA)))
+                            return false; //disallow setting it if it's already set; nonoverwriteable. 
                         break;
-                }               
+                }
+                return true;
             }
 
             [HarmonyPatch(nameof(Unit.getModVariable))]
@@ -267,6 +273,7 @@ namespace MoraleSystem
                 { //if not ready for this (e.g. game start), just skip it
                 }
             }
+
             [HarmonyPatch(nameof(Unit.start))]
             //public virtual void start(Tile pTile, FamilyType eFamily)
             static void Postfix(ref Unit __instance)
@@ -278,20 +285,20 @@ namespace MoraleSystem
                     initializeMorale(__instance, DEFAULTRP);
                 }
             }
-             
-            [HarmonyPatch(nameof(Unit.convertToRaider))]
-            //public virtual void start(Tile pTile, FamilyType eFamily)
-            static void Postfix(ref Unit __instance, TeamType eTeam)
+            [HarmonyPatch(nameof(Unit.convert))]
+            static void Postfix(Unit __result, TribeType eTribe)
+            // public virtual Unit convert(PlayerType ePlayer, TribeType eTribe, bool bEnlisted = false)
             {
-               
-                if (__instance.canDamage())
+                if (!__result.canDamage())
+                    return;
+                var initMoralePercent = 80;
+                if (eTribe == __result.game().infos().Globals.RAIDERS_TRIBE)
                 {
-                    var initMoralePercent = 200;
-                    if (!int.TryParse(__instance.getModVariable(MORALE), out int curr) || curr < int.Parse(DEFAULTRP) * initMoralePercent / 100)
-                        initializeMorale(__instance, DEFAULTRP, initMoralePercent);     
+                    initMoralePercent = 200;
                 }
-                if (debug)
-                    Debug.Log("unit raiding with morale " + __instance.getModVariable(MORALE));
+                if (!int.TryParse(__result.getModVariable(MORALE), out int curr) || curr < int.Parse(DEFAULTRP) * initMoralePercent / 100)
+                    initializeMorale(__result, DEFAULTRP, initMoralePercent);
+
             }
         }
 
@@ -304,10 +311,9 @@ namespace MoraleSystem
             {
                 using (new UnityProfileScope("HelpText.buildWidgetHelp"))
                 {
-                    Game gameClient = pManager.GameClient;
                     if (pWidget.GetWidgetType() == itemUnitMorale)
                     {
-                        Unit pUnit = gameClient?.unit(pWidget.GetDataInt(0));
+                        Unit pUnit = pManager.GameClient?.unit(pWidget.GetDataInt(0));
                         if (pUnit != null)
                         {
                             buildUnitMoraleHelp(builder, pUnit, ref __instance);
@@ -320,7 +326,7 @@ namespace MoraleSystem
         [HarmonyPatch(typeof(ClientUI))]
         public class UIPatch
         {
-            
+       /**     
             [HarmonyPatch(nameof(ClientUI.updateUnitAttackPreviewSelection))]
             static void Postfix(ref ClientUI __instance, ref IApplication ___APP, UIAttributeTag ___mSelectedPanel)
             {
@@ -340,7 +346,7 @@ namespace MoraleSystem
 
                 ___mSelectedPanel.SetBool("EnemyUnit-DamageMoralePreviewText-IsActive", ourMoraleChange != 0);
 
-            }
+            }**/
             
             [HarmonyPatch("updateUnitInfo")]
             static void Postfix(ref ClientUI __instance, ref IApplication ___APP, Unit pUnit)
@@ -372,7 +378,7 @@ namespace MoraleSystem
             static void Postfix(ref int __result, ref Player ___player, Tile pTile)
             {
 
-                if (__result != 0 || pTile == null || pTile.getOwner() == ___player.getPlayer())
+                if (__result != 0 || pTile == null || ___player == null || pTile.getOwner() == ___player.getPlayer())
                     return;
                            
                 __result = 1; //could still be in friendly (just not owned) or neutral lands + hero, so this is an overestimate...but this method gotta be quick for performance reasons
@@ -413,7 +419,7 @@ namespace MoraleSystem
             {
                 if (debug)
                     Debug.Log("AI doing heal");
-                if (isMoralelyBankrupt(___unit, 30))
+                if (isMoralelyBankrupt(___unit, 25))
                 {
                     if (!___unit.isDamaged() && __instance.canHeal(___unit.tile()))
                     {
@@ -426,7 +432,7 @@ namespace MoraleSystem
                 return true;
             }
 
-            [HarmonyPatch(nameof(Unit.UnitAI.isInGraveDanger))]
+            [HarmonyPatch(nameof(Unit.UnitAI.isInDanger))]
             static void Postfix(ref Unit ___unit, ref bool __result)
             //public virtual bool isInGraveDanger(Tile pTile, bool bAfterAttack, int iExtraDamage = 0)
             {
@@ -438,11 +444,11 @@ namespace MoraleSystem
                     {
                         return; //no morale, do base logic
                     }
-                    else if (morale / 10 +___unit.getHP() > 20) //magic number; morale + HP is pretty high
+                    else if (morale / 10 +___unit.getHP() > 30) //magic number; morale + HP is pretty high
                        __result = false;
                     return;
                 }
-                            
+              
                 __result = isMoralelyBankrupt(___unit, 15);                             
             }
 
@@ -669,7 +675,10 @@ namespace MoraleSystem
 
             String unitSpecifc = instance.getModVariable(RPEXTRA);
             if (unitSpecifc == null)
-                instance.setModVariable(RP, defaultRP); //change me to setMoraleRP
+            {
+                instance.setModVariable(RPEXTRA, "0");
+                instance.setModVariable(RP, defaultRP);
+            }
             else
             {
                 iRP += int.Parse(unitSpecifc);
@@ -677,6 +686,7 @@ namespace MoraleSystem
             }
 
             bool hasValue = int.TryParse(instance.getModVariable(MORALEEXTRA), out int curr);
+
             int baseMorale = iRP * initMoralePercent / 100; //80% rp at creation by default
             setMorale(instance,  hasValue ? curr + baseMorale: baseMorale);  
         }
@@ -716,8 +726,7 @@ namespace MoraleSystem
                     int defStruct = (tile.improvement()?.miDefenseModifierFriendly ?? 0 + tile.improvement()?.miDefenseModifier ?? 0);
                     defStruct /= 10;
                     defStruct += tile.hasCity() ? recoveryPercent : 0; //city grants double base recovery
-                    explaination[3] = defStruct;
-                   
+                    explaination[3] = defStruct;       
                 }
 
                 change += (explaination[3] + explaination[1]) * iRP / 100;
@@ -789,6 +798,7 @@ namespace MoraleSystem
             {
                 unit.setModVariable(MORALE, iMorale.ToString());  
             }
+
            
             switch (iMorale)
             {
@@ -821,12 +831,13 @@ namespace MoraleSystem
 
        private static void MoraleDeath(Unit unit)
         {
-            //animate running away, send tile text of disband
+            //send tile text of disperse
             try
             {
                 if (unit.getHP() == 0)
                     return; //already dead
                 Game g = unit.game();
+                
                 SendTileTextAll("disperse", unit.getTileID(), g);
                
                
@@ -840,12 +851,10 @@ namespace MoraleSystem
 
             }
             catch (Exception)
-            { //still having null pointers? I give up
-                MohawkAssert.Assert(false, "bye bye " + unit);
+            { //ded
             }
         }
 
-        //so about 1 kill in both is 20xp
         private static int moraleFromKills(int multiplier)
         {
             return multiplier * moralePerKill;
