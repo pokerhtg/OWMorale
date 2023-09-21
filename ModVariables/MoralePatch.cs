@@ -294,8 +294,9 @@ namespace MoraleSystem
                 var initMoralePercent = 80;
                 if (eTribe == __result.game().infos().Globals.RAIDERS_TRIBE)
                 {
-                    initMoralePercent = 200;
+                    initMoralePercent *= 2;
                 }
+
                 if (!int.TryParse(__result.getModVariable(MORALE), out int curr) || curr < int.Parse(DEFAULTRP) * initMoralePercent / 100)
                     initializeMorale(__result, DEFAULTRP, initMoralePercent);
 
@@ -444,7 +445,7 @@ namespace MoraleSystem
                     {
                         return; //no morale, do base logic
                     }
-                    else if (morale / 10 +___unit.getHP() > 30) //magic number; morale + HP is pretty high
+                    else if (morale / 10 +___unit.getHP() > 25) //magic number; morale + HP is pretty high
                        __result = false;
                     return;
                 }
@@ -740,7 +741,7 @@ namespace MoraleSystem
 
             if (cap > -1 && cap < change)
             {    
-                explaination[4] = change - cap;
+                explaination[4] = cap - change;
                 change = cap;
             }
             if (!test)
@@ -764,7 +765,7 @@ namespace MoraleSystem
                     return;
                 if (delta / MORALE_DIVISOR == 0)
                     return;
-                var msg = (delta / MORALE_DIVISOR).ToString("+#;-#") + " MP";
+                var msg = (delta / MORALE_DIVISOR).ToString("+#;-#") + "Morale";
                 if (boradcast)
                 {
                     SendTileTextAll(msg, unit.getTileID(), unit.game());
@@ -891,17 +892,14 @@ namespace MoraleSystem
                 } 
             }
             if (oldMoraleEff != EffectUnitType.NONE) { 
-                if (infos.effectUnit(oldMoraleEff).meEffectUnitUnlock != EffectUnitType.NONE)
-                    unit.changeEffectUnit(infos.effectUnit(oldMoraleEff).meEffectUnitUnlock, -1, true);
-                unit.changeEffectUnit(oldMoraleEff, -1, true);
+               
+                unit.changeEffectUnit(oldMoraleEff, SourceEffectUnitType.NONE, -1, true);
             }
             if (!noChange && moraleEff != EffectUnitType.NONE)
             {
-                if (infos.effectUnit(moraleEff).meEffectUnitUnlock != EffectUnitType.NONE)
-                    unit.changeEffectUnit(infos.effectUnit(moraleEff).meEffectUnitUnlock, 1, true);
-                unit.changeEffectUnit(moraleEff, 1, false);
-            }
                
+                unit.changeEffectUnit(moraleEff, SourceEffectUnitType.NONE, 1, false);
+            }
                
         }
 
