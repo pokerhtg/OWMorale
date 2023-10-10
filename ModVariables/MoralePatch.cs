@@ -225,8 +225,15 @@ namespace MoraleSystem
                     if (int.TryParse(target.getModVariable(MORALE), out _))
                         if (iChange > 1)
                         {
+                            
                             int dmg = getMoraleDamage(iChange);
-                            changeMorale(target, dmg, false); //change morale; return the result
+                            int cityMoraleBoost = 0;
+                            if (target.tile().hasCity())
+                            {
+                                cityMoraleBoost = target.tile().city().getHP() / 3 + dmg/2; //city defends against half of the dmg, and boosts based on city's remaining HP, so a city defender's morale can certainly go up while city is strong
+                            }
+                            changeMorale(target, dmg + cityMoraleBoost, false); //change morale; return the result
+                           
                             return dmg;
                         }
                     return 0; //unit doesn't have a morale, return 0
