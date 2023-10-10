@@ -226,11 +226,13 @@ namespace MoraleSystem
                         if (iChange > 1)
                         {
                             
-                            int dmg = getMoraleDamage(iChange);
+                            int dmg = getMoraleDamage(iChange); //is a negative number
                             int cityMoraleBoost = 0;
+                            int UNMITIGATABLE = 5;
                             if (target.tile().hasCity())
                             {
-                                cityMoraleBoost = target.tile().city().getHP() / 3 + dmg/2; //city defends against half of the dmg, and boosts based on city's remaining HP, so a city defender's morale can certainly go up while city is strong
+                                int cityHP = target.tile().city().getHP();
+                                cityMoraleBoost = cityHP / 3 - (dmg + UNMITIGATABLE) * cityHP / target.tile().city().getHPMax(); //city provides a boost per attack to morale based on cityHP, and reduce morale damage by a percent based on city's HP percent
                             }
                             changeMorale(target, dmg + cityMoraleBoost, false); //change morale; return the result
                            
