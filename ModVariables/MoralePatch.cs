@@ -185,7 +185,7 @@ namespace MoraleSystem
                     {
                         morale = 100;
                     }
-                    __result = __instance.game().infos().utils().range(__result + moraleEnlistChance(morale), 0, 75);
+                    __result = __instance.game().infos().utils().range(__result + moraleEnlistChance(morale), 0, 100);
                 }
 
                 [HarmonyPriority(1000)]
@@ -254,7 +254,7 @@ namespace MoraleSystem
                             break;
                         case RPEXTRA:
                             if (!string.IsNullOrEmpty(__instance.getModVariable(RPEXTRA)))
-                                return false; //disallow setting it if it's already set; nonoverwriteable. 
+                                return false; //disallow setting it if it's already set; non-overwriteable. 
                             break;
                     }
                     return true;
