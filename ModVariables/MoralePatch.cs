@@ -12,17 +12,10 @@ using TenCrowns.GameCore;
 using UnityEngine;
 
 /**
- Features to do                                             priority
- * defection of low morale units                                -1
- * more morale effects                                          -1
- * skirmisher ??                                                6
- * test compatiblity with rest of the dynamic mods              3
- * DU + this means leveling up is too good. hmmm.               -1
- *         mod DU's hpMax to patch based on morale system       waiting
- * MoraleBar mouseover                                          1???
+ Features to do                                                 Status
+ * EffectUnit/promotion morale interaction            Waiting on Modvariable in other XMLs
+ * MoraleBar mouseover                                Technical Difficulties
  *  
- * AI understanding of morale                                   1
- * 
 */
 namespace MoraleSystem
 {
@@ -85,7 +78,7 @@ namespace MoraleSystem
                 {
                     if (debug)
                         Debug.Log("looping in doTurn");
-                    if (unit.player() == __instance && unit.isAlive() && unit.canDamage())
+                    if (unit?.player() == __instance && unit.isAlive() && unit.canDamage())
                     {
                         if (string.IsNullOrEmpty(unit.getModVariable(RP)) || string.IsNullOrEmpty(unit.getModVariable(MORALE)))
                         {
@@ -662,11 +655,11 @@ namespace MoraleSystem
             {
                 switch (val)
                 {
-                    case int n when (n < 40):
+                    case int n when (n < 30):
                         return infos.Globals.COLOR_HEALTH_LOW;
-                    case int n when (n >= 40 && n < 80):
+                    case int n when (n >= 30 && n < 60):
                         return infos.Globals.COLOR_HEALTH_HIGH;
-                    case int n when (n >= 80 && n <= MORALE_AT_FULL_BAR):
+                    case int n when (n >= 60 && n <= MORALE_AT_FULL_BAR):
                         return infos.Globals.COLOR_HEALTH_MAX;
                     case int n when (n > MORALE_AT_FULL_BAR):
                         if (capped)//return highest possible "good" color
@@ -675,14 +668,14 @@ namespace MoraleSystem
                     default: return infos.Globals.COLOR_WHITE;
                 }
             }
+             
 
-
-            public static void initializeMorale(Unit instance, string defaultRP, int initMoralePercent = 80)
+        public static void initializeMorale(Unit instance, string defaultRP, int initMoralePercent = 80)
             {
                 if (!int.TryParse(defaultRP, out int iRP))
                     MohawkAssert.Assert(false, "Morale Parsing failed at initialization");
 
-                String unitSpecifc = instance.getModVariable(RPEXTRA);
+                String unitSpecifc = instance.getModVariable(RPEXTRA);d
                 if (unitSpecifc == null)
                 {
                     instance.setModVariable(RPEXTRA, "0");
