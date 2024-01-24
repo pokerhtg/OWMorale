@@ -144,7 +144,7 @@ namespace MoraleSystem
                         using (var listScoped = CollectionCache.GetListScoped<int>())
                         {
                             __instance.tile().getTilesInRange(3, listScoped.Value);
-
+                            var infos = __instance.game().infos();
                             foreach (int iLoopTile in listScoped.Value)
                             {
                                 Tile pLoopTile = __instance.game().tile(iLoopTile);
@@ -153,7 +153,12 @@ namespace MoraleSystem
                                 var friend = pLoopTile.defendingUnit();
                                 if (friend == null || friend.getHP() < 1 || friend.getModVariable(MORALE) == null || friend == __instance || string.IsNullOrEmpty(friend.getModVariable(RP)))
                                     continue;
-                                if (__instance.getTeam() == friend.getTeam())
+
+                               //same team, and at least one of the following:
+                               //1) one is not tribe, or 2) if both tribe, they must be the same tribe, or 3) they are both undiplomatic tribes
+                                if (__instance.getTeam() == friend.getTeam() 
+                                    && (__instance.getPlayer() != PlayerType.NONE || friend.getPlayer() != PlayerType.NONE || __instance.getTribe() == friend.getTribe() 
+                                        || !(infos.tribe(__instance.getTribe()).mbDiplomacy) && !(infos.tribe(friend.getTribe()).mbDiplomacy)))
                                 {
                                     int distance = Math.Max(__instance.tile().distanceTile(pLoopTile), 1); //will treat same tile as adj
 
@@ -675,7 +680,7 @@ namespace MoraleSystem
                 if (!int.TryParse(defaultRP, out int iRP))
                     MohawkAssert.Assert(false, "Morale Parsing failed at initialization");
 
-                String unitSpecifc = instance.getModVariable(RPEXTRA);d
+                String unitSpecifc = instance.getModVariable(RPEXTRA);
                 if (unitSpecifc == null)
                 {
                     instance.setModVariable(RPEXTRA, "0");
