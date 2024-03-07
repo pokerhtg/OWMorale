@@ -399,6 +399,8 @@ namespace MoraleSystem
                 {
                     if (debug)
                         Debug.Log("unit AI below health percent manipulation");
+                    if (!___unit.canDamage())
+                        return true;
                     if (!int.TryParse(___unit.getModVariable(MORALE), out int morale))
                     {
                         return true;
@@ -447,6 +449,8 @@ namespace MoraleSystem
                         Debug.Log("unit AI thinking about graves and dangers therein");
                     if (__result)
                     {
+                        if (!___unit.canDamage())
+                            return;
                         if (!int.TryParse(___unit.getModVariable(MORALE), out int morale))
                         {
                             return; //no morale, do base logic
@@ -461,6 +465,8 @@ namespace MoraleSystem
 
                 private static bool isMoralelyBankrupt(Unit unit, int bar)
                 {
+                    if (!unit.canDamage())
+                        return false;
                     if (!int.TryParse(unit.getModVariable(MORALE), out int morale))
                     {
                         return false; //no morale, can't bankrupt
