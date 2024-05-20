@@ -573,7 +573,7 @@ namespace MoraleSystem
                 if (mchange != 0)
                     value = helpText.concatenate(value, helpText.buildColorTextSignedVariable(mchange, iMultiplier: MORALE_DIVISOR));
 
-                value = helpText.concatenate(value, helpText.ModSettings.SpriteRepo?.GetInlineIconVariable(HUDIconTypes.CAPITAL));
+                value = helpText.concatenate(value, helpText.ModSettings.GetSpriteRepo().GetInlineIconVariable(HUDIconTypes.CAPITAL));
 
                 return helpText.buildLinkTextVariable(value, itemUnitMorale, pUnit.getID().ToStringCached(), eLinkColor: colorizeMorale(morale, pUnit.game().infos()));
             }
