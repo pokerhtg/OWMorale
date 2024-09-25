@@ -58,6 +58,7 @@ namespace MoraleSystem
 
             //morale update parameters
             public static int generalDelta = 40; //RP boost if has general
+            public static int tribalHonor = 50; //RP boost if a unit belongs to diplomatic tribe
             public static int perLevel = 10;
             public static int recoveryPercent = 8;
             public static int moralePerKill = 40;
@@ -81,7 +82,7 @@ namespace MoraleSystem
                     {
                         if (string.IsNullOrEmpty(unit.getModVariable(RP)) || string.IsNullOrEmpty(unit.getModVariable(MORALE)))
                         {
-                            MohawkAssert.Assert(false, "found a unit without MORALE initialization");
+                            Log("found a unit without MORALE initialization");
                             initializeMorale(unit, DEFAULTRP);
                             return;
                         }
@@ -254,7 +255,7 @@ namespace MoraleSystem
 
                 [HarmonyPatch(nameof(Unit.setModVariable))]
                 // public virtual void setModVariable(string zIndex, string zNewValue)
-                static bool Prefix(ref Unit __instance, string zIndex, string zNewValue)
+                static bool Prefix(ref Unit __instance, string zIndex, ref string zNewValue)
                 {
                     if (debug)
                         Log("setting " + zIndex);
@@ -264,8 +265,15 @@ namespace MoraleSystem
                             setMorale(__instance, int.Parse(zNewValue), true); //TODO add error checking?
                             break;
                         case RPEXTRA:
-                            if (!string.IsNullOrEmpty(__instance.getModVariable(RPEXTRA)))
-                                return false; //disallow setting it if it's already set; non-overwriteable. 
+                        case MORALEEXTRA:
+                            if (int.TryParse(zNewValue, out int raw))
+                            {
+                                if (raw != 0 && raw % MORALE_DIVISOR != 0) //FIXME right now all multiples of morale divisor is marked as invalid and need to be multiplied. fix code if design changes
+                                {
+                                    //haven't been multiplied by morale divisor yet, obviously
+                                    zNewValue = (raw * MORALE_DIVISOR).SafeToString();
+                                }
+                            }
                             break;
                     }
                     return true;
@@ -277,6 +285,8 @@ namespace MoraleSystem
                 {
                     if (debug)
                         Log("getting " + zIndex);
+                    if (__result == null || __instance == null)
+                        return;
                     try
                     {
                         if (zIndex == RP && !string.IsNullOrEmpty(__result))
@@ -288,8 +298,9 @@ namespace MoraleSystem
 
                         }
                     }
-                    catch (Exception)
-                    { //if not ready for this (e.g. game start), just skip it
+                    catch (Exception e)
+                    { //log any issues?
+                         LogError("getModVariable error: " + e.StackTrace);
                     }
                 }
 
@@ -331,6 +342,10 @@ namespace MoraleSystem
 
                     __result *= 50 - moraleEnlistChance(morale); //moraleenglist chance is up to 25%; so this represents 50% discount at most, no upper limit on how extra expensive this can be if morale is crazy high
                     __result /= 50;
+                    //then apply a slight discount as enlist chance is probably negative, and round down
+                    __result /= 60;
+                    __result *= 50;
+
                 }
                 
             }
@@ -425,14 +440,8 @@ namespace MoraleSystem
                 {
                     if (debug)
                         Log("unit AI below health percent manipulation");
-                    if (!___unit.canDamage())
-                        return true;
-                    if (!int.TryParse(___unit.getModVariable(MORALE), out int morale))
-                    {
-                        return true;
-                    }
-                    //not counting the last 20 morale for emergency, is morale lower than threshhold? 
-                    __result = 100 * (morale - 20) < int.Parse(___unit.getModVariable(RP)) * iPercent;
+                    __result = isMoralelyBankrupt(___unit, iPercent/2);//if morale is lower than X / 2 percent, the unit is considered to be less than x % HP for AI eval purposes
+                    
                     return !__result;
                 }
 
@@ -454,7 +463,7 @@ namespace MoraleSystem
                 {
                     if (debug)
                         Log("AI doing heal");
-                    if (isMoralelyBankrupt(___unit, 25))
+                    if (isMoralelyBankrupt(___unit, 20))
                     {
                         if (!___unit.isDamaged() && __instance.canHeal(___unit.tile()))
                         {
@@ -493,11 +502,11 @@ namespace MoraleSystem
                 {
                     if (!unit.canDamage())
                         return false;
-                    if (!int.TryParse(unit.getModVariable(MORALE), out int morale))
+                    if (!int.TryParse(unit.getModVariable(MORALE), out int morale) || !int.TryParse(unit.getModVariable(RP), out int rpV))
                     {
                         return false; //no morale, can't bankrupt
                     }
-                    return (morale - bar) * 100 / int.Parse(unit.getModVariable(RP)) < bar; //morale, not counting the last BAR, is less than BAR percent of RP
+                    return (morale - bar) * 100 / rpV < bar; //morale, not counting the last BAR, is less than BAR percent of RP
                 }
             }//end of AI
 
@@ -568,17 +577,21 @@ namespace MoraleSystem
                 if (!int.TryParse(unit.getModVariable(RPEXTRA), out int extraRP))
                     extraRP = 0;
 
+                var tribe = unit.getTribe();
+                var btribe = (tribe != TribeType.NONE && unit.game().infos().tribe(tribe).mbDiplomacy);
                 List<int> why = new List<int> {
                     int.Parse(DEFAULTRP),
                     extraRP,
                     unit.hasGeneral() ? generalDelta : 0,
                     perLevel * (unit.getLevel() - 1),
                     unit.hasFamilyOpinion() ? ((int)unit.getFamilyOpinion() - 3) * perFamilyOpinion : 0,
+                    btribe ? Math.Max(5, tribalHonor - MORALE_DIVISOR * unit.game().tribe(tribe).getNumTribeImprovements()) : 0,
             };
                 sum = 0;
-                for (int i = 0; i < why.Count; i++)
+                for (int i = 0; i < why.Count; i++) { 
                     sum += why[i];
-
+                   // Log(sum + " after " + i);
+                }
                 return why;
             }
 
@@ -629,7 +642,7 @@ namespace MoraleSystem
 
                     }
 
-                    var whyRP = calculateRP(pUnit, out int sum); // why: base, extra, general, level, familyOpinion
+                    var whyRP = calculateRP(pUnit, out int sum); // why: base, extra, general, level, familyOpinion, tribalhonor
                     builder.AddTEXT("TEXT_HELPTEXT_UNIT_MORALE_REST_POINT", (float)sum / MORALE_DIVISOR);
                     using (builder.BeginScope(TextBuilder.ScopeType.BULLET))
                     {
@@ -651,6 +664,10 @@ namespace MoraleSystem
                         {
                             builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(whyRP[4], iMultiplier: MORALE_DIVISOR),
                                 helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_RP_FAM_OPINION", helpText.TEXTVAR_TYPE(pUnit.familyOpinion().mName))));
+                        }
+                        if (whyRP[5] != 0)
+                        {
+                            builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(whyRP[5], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_TRIBAL")));
                         }
                     }
 
@@ -712,7 +729,8 @@ namespace MoraleSystem
                 if (!int.TryParse(defaultRP, out int iRP))
                     MohawkAssert.Assert(false, "Morale Parsing failed at initialization");
 
-                String unitSpecifc = instance.getModVariable(RPEXTRA);
+                String unitSpecifc = instance.getModVariable(RPEXTRA); 
+                
                 if (unitSpecifc == null)
                 {
                     instance.setModVariable(RPEXTRA, "0");
@@ -724,10 +742,10 @@ namespace MoraleSystem
                     instance.setModVariable(RP, iRP.ToString());
                 }
 
-                bool hasValue = int.TryParse(instance.getModVariable(MORALEEXTRA), out int curr);
+                bool hasValue = int.TryParse(instance.getModVariable(MORALEEXTRA), out int bonusStart);
 
                 int baseMorale = iRP * initMoralePercent / 100; //80% rp at creation by default
-                setMorale(instance, hasValue ? curr + baseMorale : baseMorale);
+                setMorale(instance, hasValue ? bonusStart + baseMorale : baseMorale);
             }
 
             public static int moraleTurnUpdate(Unit unit, out List<int> explaination, bool test = false)
@@ -742,8 +760,9 @@ namespace MoraleSystem
 
                 if (!int.TryParse(unit.getModVariable(RP), out int iRP))
                 {
-                    MohawkAssert.Assert(false, "Morale Resting Point Parsing failed: " + unit.getModVariable(RP) + " on Unit " + unit.getID() + unit.getType());
-                    return -1;
+                    Log("Morale Resting Point Parsing failed: " + unit.getModVariable(RP) + " on a " + unit.game().infos().unit(unit.getType()).mName);
+
+                    return int.Parse(DEFAULTRP);
                 }
                 int change = -unit.getDamage() / 2;
                 if (test) //if we are testing, let's include in our prediction future morale-based HP loss's impact on future morale change
