@@ -51,10 +51,11 @@ namespace MoraleSystem
             private const string MORALE = "CURR_MORALE";
 
             public static bool debug = false;
-            public const int MAXTICK = 7; //morale bar's number of ticks
+           
             public const string DEFAULTRP = "80";
             public const int MORALE_DIVISOR = 10;
             public static ItemType itemUnitMorale = (ItemType)1000;
+            public static int MAXGOODMORALE =161;
 
             //morale update parameters
             public static int generalDelta = 40; //RP boost if has general
@@ -66,8 +67,10 @@ namespace MoraleSystem
             public static int perFamilyOpinion = 15;
             private static int getMoraleChange(int dmg) => -3 * (dmg - 2) - (int)(dmg > 7 ? dmg * (0.6 + dmg / 10.0) : 0);
 
-            public static int MORALE_AT_FULL_BAR = 126;
-            public static int moralePerTick = MORALE_AT_FULL_BAR / MAXTICK;
+            public const int MAXTICK = 8; //morale bar's number of ticks
+            public const int MORALEPERTICK = 17;
+            public static int maroleAtFullBar = MORALEPERTICK * MAXTICK; 
+           
 
             [HarmonyPatch(typeof(Player), nameof(Player.doTurn))]
             static void Postfix(Player __instance)
@@ -100,8 +103,8 @@ namespace MoraleSystem
                     foreach (int iUnitID in __instance.getUnits().ToSet())
                     {
                         var unit = __instance.game().unit(iUnitID);
-                        if (unit.canDamage())
-                            moraleTurnUpdate(__instance.game().unit(iUnitID), out _);
+                        if (unit.isAlive() && unit.canDamage())
+                            moraleTurnUpdate(unit, out _);
                         else
                         {
                             //  if (debug)
@@ -116,7 +119,7 @@ namespace MoraleSystem
             [HarmonyPatch(typeof(City), nameof(City.doRebelUnit))]
             static void Postfix(ref Unit __result)
             {
-                initializeMorale(__result, DEFAULTRP, 160);
+                initializeMorale(__result, DEFAULTRP, 150);
             }
 
 
@@ -518,8 +521,8 @@ namespace MoraleSystem
                 int morale = int.Parse(unit.getModVariable(MORALE));
 
                 ColorType moraleColor = colorizeMorale(morale, infos, true);
-                int currTicks = morale / moralePerTick;
-                int dmgTicks = currTicks - (morale - damage) / moralePerTick;
+                int currTicks = morale / MORALEPERTICK;
+                int dmgTicks = currTicks - (morale - damage) / MORALEPERTICK;
 
                 for (int i = 0; i < MAXTICK; i++)
                 {
@@ -527,11 +530,10 @@ namespace MoraleSystem
                     {
                         moraleColor = infos.Globals.COLOR_DAMAGE;
                     }
-                    else if (i == 2 * MAXTICK - currTicks) //willing to do a double-loop to display up to 2x fullbar
+                    else if (i >= MAXTICK - (morale - maroleAtFullBar) / (3*MORALEPERTICK/2)) //too high; start to double back with cover the top color. Morale per tick increases 50%
                     {
                         moraleColor = colorizeMorale(morale, infos);
                     }
-
                     aeColors.Add((i < currTicks) ? moraleColor : infos.Globals.COLOR_FORTIFY_NONE);
                 }
 
@@ -557,7 +559,7 @@ namespace MoraleSystem
                             pipTag.SetKey("Color", pUnit.game().modSettings().ColorManager.GetColorHex(aeColors[i]));
 
                         }
-                        unitTag.SetInt("Morale-Count", morale / moralePerTick);
+                        unitTag.SetInt("Morale-Count", morale / MORALEPERTICK);
                         unitTag.SetInt("Morale-Max", MAXTICK); //max morale ticks
 
                     }
@@ -713,12 +715,12 @@ namespace MoraleSystem
                         return infos.Globals.COLOR_HEALTH_LOW;
                     case int n when (n >= 30 && n < 60):
                         return infos.Globals.COLOR_HEALTH_HIGH;
-                    case int n when (n >= 60 && n <= MORALE_AT_FULL_BAR):
+                    case int n when (n >= 60 && n <= MAXGOODMORALE):
                         return infos.Globals.COLOR_HEALTH_MAX;
-                    case int n when (n > MORALE_AT_FULL_BAR):
+                    case int n when (n > MAXGOODMORALE):
                         if (capped)//return highest possible "good" color
                             return infos.Globals.COLOR_HEALTH_MAX;
-                        return infos.getType<ColorType>("COLOR_OVERCONFIDENT"); //todo: find a better color
+                        return infos.getType<ColorType>("COLOR_OVERCONFIDENT"); 
                     default: return infos.Globals.COLOR_WHITE;
                 }
             }
