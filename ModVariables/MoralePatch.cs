@@ -76,7 +76,7 @@ namespace MoraleSystem
             static void Postfix(Player __instance)
             {
                 Game game = __instance.game();
-
+               
                 foreach (Unit unit in game.getUnits().ToSet<Unit>())
                 {
                     if (debug)
@@ -85,7 +85,7 @@ namespace MoraleSystem
                     {
                         if (string.IsNullOrEmpty(unit.getModVariable(RP)) || string.IsNullOrEmpty(unit.getModVariable(MORALE)))
                         {
-                            Log("found a unit without MORALE initialization");
+                         //   Log("found a unit without MORALE initialization");
                             initializeMorale(unit, DEFAULTRP);
                             return;
                         }
@@ -98,19 +98,20 @@ namespace MoraleSystem
             static void Postfix(Tribe __instance)
             {
                 using (var unitList = CollectionCache.GetListScoped<int>())
-                {
-
-                    foreach (int iUnitID in __instance.getUnits().ToSet())
+                {       
+                    foreach (int iUnitID in __instance.getUnits()?.ToSet())
                     {
                         var unit = __instance.game().unit(iUnitID);
-                        if (unit.isAlive() && unit.canDamage())
-                            moraleTurnUpdate(unit, out _);
-                        else
+                        if (unit.isAlive())
                         {
-                            //  if (debug)
-                            Log("somehow I'll, make a Man..rauder, out of " + unit.getType());
-                            unit.doUpgrade(__instance.game().infos().getType<UnitType>("UNIT_MARAUDER_1"), null);
-
+                            if (unit.canDamage())
+                                moraleTurnUpdate(unit, out _);
+                            else
+                            {
+                                //  if (debug)
+                                Log("somehow I'll, make a Ma..rauder, out of " + unit.getType());
+                                unit.doUpgrade(__instance.game().infos().getType<UnitType>("UNIT_MARAUDER_1"), null);
+                            }
                         }
                     }
                 }
@@ -228,7 +229,7 @@ namespace MoraleSystem
                                                                                                                                                             //way overestimates damage to units in cities; net result is units in cities don't die of HP but of morale. Pretty cool, keeping it for now
                     }
                     if (target != null && (!target.isAlive() || target.getHP() < 1))
-                        changeMorale(__instance, moraleFromKills(1), true);
+                        changeMorale(__instance, moraleFromKills(1), false);
                 }
 
                 private static int inflictBattleMoraleDamage(ref Unit target, int idamage)
@@ -258,7 +259,7 @@ namespace MoraleSystem
 
                 [HarmonyPatch(nameof(Unit.setModVariable))]
                 // public virtual void setModVariable(string zIndex, string zNewValue)
-                static bool Prefix(ref Unit __instance, string zIndex, ref string zNewValue)
+                static void Prefix(ref Unit __instance, string zIndex, ref string zNewValue)
                 {
                     if (debug)
                         Log("setting " + zIndex);
@@ -279,7 +280,6 @@ namespace MoraleSystem
                             }
                             break;
                     }
-                    return true;
                 }
 
                 [HarmonyPatch(nameof(Unit.getModVariable))]
@@ -421,22 +421,18 @@ namespace MoraleSystem
                 }
             }
 
-            [HarmonyPatch(typeof(Unit.UnitAI))]
+           // [HarmonyPatch(typeof(Unit.UnitAI))]
             public class AIPatch
             {
-             /**   [HarmonyPatch(typeof(Player.PlayerAI), nameof(Player.PlayerAI.getTileDanger))]
-                //public virtual int getTileDanger(Tile pTile)
-                static void Postfix(ref int __result, ref Player ___player, Tile pTile)
+                [HarmonyPatch(nameof(Player.PlayerAI.updateTileProtection))]
+                static bool Prefix(Unit pUnit, int iChange)
+               // public virtual void updateTileProtection(Unit pUnit, Tile pUnitTile, int iChange)
                 {
-
-                    if (__result != 0 || pTile == null || ___player == null || pTile.getOwner() == ___player.getPlayer())
-                        return;
-
-                    __result = 1; //could still be in friendly (just not owned) or neutral lands + hero, so this is an overestimate...but this method gotta be quick for performance reasons
-
+                    if (iChange < 0 || pUnit == null || isMoralelyBankrupt(pUnit, 25))
+                        return false; //if morale is too long, unit does not provide any positive change to tile protection
+                    return true;
                 }
-             **/
-                [HarmonyPatch(nameof(Unit.UnitAI.isBelowHealthPercent))]
+            [HarmonyPatch(nameof(Unit.UnitAI.isBelowHealthPercent))]
                 ///public virtual bool isBelowHealthPercent(int iPercent)
                 ///factoring low morale in "low heal" definition
                 static bool Prefix(ref Unit ___unit, ref bool __result, int iPercent)
@@ -456,11 +452,11 @@ namespace MoraleSystem
                         Log("unit AI retreat tile value manipulation");
                     if (__instance.canHeal(pTile)) //since can heal means can also boost morale, it is now more important 
                     {
-                        __result *= 2;
+                        __result *= 3;
                     }
                 }
 
-                [HarmonyPatch("doHeal")]
+                [HarmonyPatch(typeof(Unit.UnitAI), "doHeal")]
                 //protected virtual bool doHeal(PathFinder pPathfinder, bool bRetreat)
                 static bool Prefix(ref Unit.UnitAI __instance, ref Unit ___unit, ref bool __result)
                 {
@@ -478,6 +474,37 @@ namespace MoraleSystem
                     }
                     return true;
                 }
+
+                [HarmonyPatch(nameof(Unit.UnitAI.expectedDamage))]
+                static void Postfix(ref Unit ___unit, ref int __result, Tile pTile)
+                //public virtual int expectedDamage(Tile pTile)
+                {
+                    if (isMoralelyBankrupt(___unit, 15))
+                        __result += 2; //expect some attrition
+                    if (isMoralelyBankrupt(___unit, 40) && pTile.owner() != ___unit.player())
+                        __result++; //expect morale decline, will call that a damage of sort
+                }
+
+                [HarmonyPatch(nameof(Unit.UnitAI.retreatTileValue))]
+                static void Postfix(ref Unit ___unit, ref long __result, Tile pTile)
+                {
+                    string m = ___unit.getModVariable(MORALE);
+                    if (string.IsNullOrEmpty(m))
+                        return;
+                   
+                    string r = ___unit.getModVariable(RP);
+                    if (string.IsNullOrEmpty(r))
+                        return;
+
+                    int morale = int.Parse(m);
+                    int rp = int.Parse(r);
+
+                    if (rp > morale && ___unit.AI.canHeal(pTile)) //morale can improve with rest
+                    {
+                        __result *= 2;
+                    }
+                }
+
 
                 [HarmonyPatch(nameof(Unit.UnitAI.isInDanger))]
                 static void Postfix(ref Unit ___unit, ref bool __result)
@@ -762,7 +789,7 @@ namespace MoraleSystem
 
                 if (!int.TryParse(unit.getModVariable(RP), out int iRP))
                 {
-                    Log("Morale Resting Point Parsing failed: " + unit.getModVariable(RP) + " on a " + unit.game().infos().unit(unit.getType()).mName);
+                    ////Log("Morale Resting Point Parsing failed: " + unit.getModVariable(RP) + " on a " + unit.game().infos().unit(unit.getType()).mName);
 
                     return int.Parse(DEFAULTRP);
                 }
