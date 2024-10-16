@@ -339,18 +339,15 @@ namespace MoraleSystem
                 static void Postfix(ref Unit __instance, ref int __result)
                 // public virtual Unit convert(PlayerType ePlayer, TribeType eTribe, bool bEnlisted = false)
                 {
-                    int morale = int.Parse(__instance.getModVariable(MORALE));
+                    if (!int.TryParse(__instance.getModVariable(MORALE), out int morale))
+                        return;
                     if (debug)
                         Log("morale at this point is " + morale);
 
                     __result *= 50 - moraleEnlistChance(morale); //moraleenglist chance is up to 25%; so this represents 50% discount at most, no upper limit on how extra expensive this can be if morale is crazy high
-                    __result /= 50;
-                    //then apply a slight discount as enlist chance is probably negative, and round down
-                    __result /= 60;
-                    __result *= 50;
-
+                    __result /= 230;
+                    __result *= 5;//basically divide by 50 overall, rounded 
                 }
-                
             }
 
             [HarmonyPatch(typeof(HelpText))]
@@ -804,8 +801,8 @@ namespace MoraleSystem
                 if (unit.isHealPossibleTile(unit.tile(), true) && iMorale < iRP)
                 {
 
-                    explaination[1] = recoveryPercent;
-
+                    explaination[1] = unit.isTribe()? recoveryPercent * 3 / 2: recoveryPercent;
+                 
 
                     var tile = unit.tile();
                     if (tile != null)
