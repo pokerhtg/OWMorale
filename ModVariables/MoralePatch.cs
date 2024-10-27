@@ -55,68 +55,41 @@ namespace MoraleSystem
             public const string DEFAULTRP = "80";
             public const int MORALE_DIVISOR = 10;
             public static ItemType itemUnitMorale = (ItemType)1000;
-            public static int MAXGOODMORALE =161;
+            public const int MAXGOODMORALE =170;
 
             //morale update parameters
             public static int generalDelta = 40; //RP boost if has general
-            public static int tribalHonor = 50; //RP boost if a unit belongs to diplomatic tribe
+            public static int tribalHonor = 60; //RP boost if a unit belongs to diplomatic tribe
             public static int perLevel = 10;
             public static int recoveryPercent = 8;
             public static int moralePerKill = 40;
             public static int friendDeathMoraleImpact = -30;
-            public static int perFamilyOpinion = 15;
+            public static int perFamilyOpinion = 10;
             private static int getMoraleChange(int dmg) => -3 * (dmg - 2) - (int)(dmg > 7 ? dmg * (0.6 + dmg / 10.0) : 0);
 
             public const int MAXTICK = 8; //morale bar's number of ticks
             public const int MORALEPERTICK = 17;
-            public static int maroleAtFullBar = MORALEPERTICK * MAXTICK; 
-           
+            private const int DECAYPERCENT = 30;
+            public static int maroleAtFullBar = MORALEPERTICK * MAXTICK;
 
-            [HarmonyPatch(typeof(Player), nameof(Player.doTurn))]
-            static void Postfix(Player __instance)
+            [HarmonyPatch(typeof(Game),"doTurn")]
+            static void Postfix(Game __instance)
             {
-                Game game = __instance.game();
-               
-                foreach (Unit unit in game.getUnits().ToSet<Unit>())
+                foreach (Unit unit in __instance.getUnits().ToSet<Unit>())//create a copy, since the list will be modified as we go through it
                 {
-                    if (debug)
-                        Log("looping in doTurn");
-                    if (unit?.player() == __instance && unit.isAlive() && unit.canDamage())
-                    {
-                        if (string.IsNullOrEmpty(unit.getModVariable(RP)) || string.IsNullOrEmpty(unit.getModVariable(MORALE)))
-                        {
-                         //   Log("found a unit without MORALE initialization");
-                            initializeMorale(unit, DEFAULTRP);
-                            return;
-                        }
-                        moraleTurnUpdate(unit, out _);
-                    }
+                    if (unit == null || !unit.canDamage())
+                        continue;
+                    if (debug) 
+                        Log("doing morale for a unit");
+                    //should have morale, but don't
+                    if (string.IsNullOrEmpty(unit.getModVariable(RP)) || string.IsNullOrEmpty(unit.getModVariable(MORALE))) 
+                        initializeMorale(unit, DEFAULTRP);
+
+                    //should have morale, and do
+                    else moraleTurnUpdate(unit, out _);  
                 }
             }
-
-            [HarmonyPatch(typeof(Tribe), nameof(Tribe.doTurn))]
-            static void Postfix(Tribe __instance)
-            {
-                using (var unitList = CollectionCache.GetListScoped<int>())
-                {       
-                    foreach (int iUnitID in __instance.getUnits()?.ToSet())
-                    {
-                        var unit = __instance.game().unit(iUnitID);
-                        if (unit.isAlive())
-                        {
-                            if (unit.canDamage())
-                                moraleTurnUpdate(unit, out _);
-                            else
-                            {
-                                //  if (debug)
-                                Log("somehow I'll, make a Ma..rauder, out of " + unit.getType());
-                                unit.doUpgrade(__instance.game().infos().getType<UnitType>("UNIT_MARAUDER_1"), null);
-                            }
-                        }
-                    }
-                }
-            }
-
+          
             [HarmonyPatch(typeof(City), nameof(City.doRebelUnit))]
             static void Postfix(ref Unit __result)
             {
@@ -182,7 +155,7 @@ namespace MoraleSystem
                                     int distance = Math.Max(__instance.tile().distanceTile(pLoopTile), 1); //will treat same tile as adj
 
                                     int moraleHit = friendDeathMoraleImpact / distance;
-                                    changeMorale(friend, boost? -moraleHit: moraleHit, true);
+                                    changeMorale(friend, boost? -moraleHit: moraleHit, true, noKill: true); //morale blast doesn't kill; stop chaining
                                 }
                             }
                         }
@@ -239,18 +212,17 @@ namespace MoraleSystem
                     if (debug) 
                         Log(idamage + " change for " + target.getID() + " whose morale is " + target.getModVariable(MORALE));
                     if (int.TryParse(target.getModVariable(MORALE), out _))
-                        if (idamage > 1)
+                        if (idamage > 0) 
                         {
                             int moraleDelta = getMoraleChange(idamage); //is a negative number
-                            
-                            int cityMoraleBoost = 0;
-                            int UNMITIGATABLE = 6;
-                            if (target.tile().hasCity())
+                            var city = target.tile().city();
+                            if (city != null)
                             {
-                                int cityHP = target.tile().city().getHP();
-                                cityMoraleBoost = cityHP / 3 - (moraleDelta + UNMITIGATABLE) * cityHP / target.tile().city().getHPMax(); //city provides a boost per attack to morale based on cityHP, and reduce morale damage by a percent based on city's HP percent
+                                int cityHP = city.getHP();
+                                int maxHP = Math.Max(1, city.getHPMax());
+                                moraleDelta = cityHP / 5 + moraleDelta * (maxHP - cityHP) / maxHP; //city provides a boost per attack to morale based on cityHP, and reduce morale damage by a percent based on city's HP percent
                             }
-                            changeMorale(target, moraleDelta + cityMoraleBoost, false); //change morale; return the result
+                            changeMorale(target, moraleDelta, false); //change morale; return the result
                            
                             return moraleDelta;
                         }
@@ -598,7 +570,7 @@ namespace MoraleSystem
             /// <param name="unit"></param>
             /// <param name="sum"></param>
             /// <returns>why: base, extra, general, level, familyOpinion</returns>
-            private static List<int> calculateRP(Unit unit, out int sum)
+            private static List<int> calculateRP(Unit unit, out int sum, int maxAllowed = MAXGOODMORALE)
             {
                 if (!int.TryParse(unit.getModVariable(RPEXTRA), out int extraRP))
                     extraRP = 0;
@@ -614,10 +586,12 @@ namespace MoraleSystem
                     btribe ? Math.Max(5, tribalHonor - MORALE_DIVISOR * unit.game().tribe(tribe).getNumTribeImprovements()) : 0,
             };
                 sum = 0;
+
                 for (int i = 0; i < why.Count; i++) { 
                     sum += why[i];
                    // Log(sum + " after " + i);
                 }
+                sum = Math.Min(maxAllowed, sum);
                 return why;
             }
 
@@ -669,10 +643,9 @@ namespace MoraleSystem
                     }
 
                     var whyRP = calculateRP(pUnit, out int sum); // why: base, extra, general, level, familyOpinion, tribalhonor
-                    builder.AddTEXT("TEXT_HELPTEXT_UNIT_MORALE_REST_POINT", (float)sum / MORALE_DIVISOR);
+                    builder.AddTEXT("TEXT_HELPTEXT_UNIT_MORALE_REST_POINT", (float) sum / MORALE_DIVISOR);
                     using (builder.BeginScope(TextBuilder.ScopeType.BULLET))
                     {
-
                         builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(whyRP[0], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_RP_BASE", true)));
                         if (whyRP[1] != 0)
                         {
@@ -696,35 +669,45 @@ namespace MoraleSystem
                             builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(whyRP[5], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_TRIBAL")));
                         }
                     }
+                    if (sum >= MAXGOODMORALE)
+                    {
+                        using (builder.BeginScope(TextBuilder.ScopeType.DOUBLE_INDENT))
+                        {
+                            builder.Add(helpText.buildColorTextPositiveVariable(helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_MAX_RP_CAP", MAXGOODMORALE / MORALE_DIVISOR)));
+                        }
+                    }
 
                     var totalMoraleUpdate = moraleTurnUpdate(pUnit, out var why, true);
+                    //from damage, from recovery, from decay, defStruct, max
                     builder.AddTEXT("TEXT_HELPTEXT_UNIT_MORALE_DRIFT", helpText.buildSignedTextVariable(totalMoraleUpdate, iMultiplier: MORALE_DIVISOR));
 
                     using (builder.BeginScope(TextBuilder.ScopeType.BULLET))
                     {
                         if (why[1] != 0)
                         {
-                            builder.Add(helpText.concatenate(helpText.buildPercentTextValue(why[1]), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_MORALE_RECOVERY")));
+                            builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(why[1], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_MORALE_RECOVERY", helpText.buildPercentTextValue(recoveryPercent))));
                         }
 
                         if (why[3] != 0)
                         {
-                            builder.Add(helpText.concatenate(helpText.buildPercentTextValue(why[3]), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_MORALE_DEF")));
+                            builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(why[3], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_MORALE_DEF")));
                         }
 
                         if (why[2] != 0)
                         {
-                            builder.Add(helpText.concatenate(helpText.buildPercentTextValue(why[2]), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_MORALE_DECAY")));
+                            builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(why[2], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_MORALE_DECAY", helpText.buildPercentTextValue(DECAYPERCENT))));
                         }
 
                         if (why[0] != 0)
                         {
-                            builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(why[0], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_LINK_HELP_IMPROVEMENT_BUILD_TURNS_DAMAGED", true)));
+                            builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(why[0], iMultiplier: MORALE_DIVISOR), helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_DAMAGE_MORALE", true)));
                         }
-                        if (why[4] > -1)
+                        if (why[4] != 0)
                         {
-                            builder.Add(helpText.buildColonSpaceOne(helpText.buildSignedTextVariable(why[4], iMultiplier: MORALE_DIVISOR),
-                                helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_MORALE_CAP", helpText.buildSignedTextVariable(sum, false, MORALE_DIVISOR))));
+                            using (builder.BeginScope(TextBuilder.ScopeType.DOUBLE_INDENT))
+                            {
+                                builder.Add(helpText.buildColorTextPositiveVariable(helpText.TEXTVAR_TYPE("TEXT_HELPTEXT_UNIT_MORALE_CAP", why[4] / MORALE_DIVISOR)));
+                            }
                         }
                     }
                 }
@@ -776,8 +759,7 @@ namespace MoraleSystem
 
             public static int moraleTurnUpdate(Unit unit, out List<int> explaination, bool test = false)
             {
-
-                explaination = new List<int> { 0, 0, 0, 0, -1 }; //from damage, from recovery, from decay, defStruct, max
+                explaination = new List<int> { 0, 0, 0, 0, 0}; //from damage, from recovery, from decay, defStruct, max
                 if (!int.TryParse(unit.getModVariable(MORALE), out int iMorale))
                 {
                     MohawkAssert.Assert(false, "Morale Parsing failed: " + unit.getModVariable(MORALE) + " on Unit " + unit.getID() + unit.getType());
@@ -787,22 +769,22 @@ namespace MoraleSystem
                 if (!int.TryParse(unit.getModVariable(RP), out int iRP))
                 {
                     ////Log("Morale Resting Point Parsing failed: " + unit.getModVariable(RP) + " on a " + unit.game().infos().unit(unit.getType()).mName);
-
                     return int.Parse(DEFAULTRP);
                 }
-                int change = -unit.getDamage() / 2;
+
+                int change = 0;
                 if (test) //if we are testing, let's include in our prediction future morale-based HP loss's impact on future morale change
                 {
                     int extraDamage = unit.game().infos().effectUnit(getMoraleEffect(unit))?.miDamageAlways ?? 0;
-                    change = -(unit.getDamage() + extraDamage) / 2;
+                    explaination[0] = -(unit.getDamage() + extraDamage) / 2;
                 }
-
-                explaination[0] = change;
+                else
+                    explaination[0] = -unit.getDamage() / 2;
+                
                 if (unit.isHealPossibleTile(unit.tile(), true) && iMorale < iRP)
                 {
-
-                    explaination[1] = unit.isTribe()? recoveryPercent * 3 / 2: recoveryPercent;
-                 
+                    explaination[1] = recoveryPercent * iRP / 100;
+                   // change += explaination[1];
 
                     var tile = unit.tile();
                     if (tile != null)
@@ -810,30 +792,34 @@ namespace MoraleSystem
                         int defStruct = (tile.improvement()?.miDefenseModifierFriendly ?? 0 + tile.improvement()?.miDefenseModifier ?? 0);
                         defStruct /= 10;
                         defStruct += tile.hasCity() ? recoveryPercent : 0; //city grants double base recovery
-                        explaination[3] = defStruct;
+                        explaination[3] = defStruct * recoveryPercent * iRP / 100;
                     }
-
-                    change += (explaination[3] + explaination[1]) * iRP / 100;
+               //     change += (explaination[3] + explaination[1]) * iRP / 100;
                 }
                 else if (iMorale > iRP)
                 {
-                    explaination[2] = -recoveryPercent * 4;//magic number here
-                    change -= explaination[2] * (iRP - iMorale) / 100;
-                }
-                int cap = Math.Min(iRP - iMorale, change);
+                    explaination[2] = DECAYPERCENT * (iRP - iMorale) / 100;//decay; a percent of morale over RP
 
-                if (cap > -1 && cap < change)
-                {
-                    explaination[4] = cap - change;
-                    change = cap;
+               //     change += explaination[2];
                 }
+                for (int i = 0; i< explaination.Count - 1; i++) //exclude the last element of explanation, which is the cap calculated below
+                {
+                    change += explaination[i];
+                }
+
+                if (change > 0 && change + iMorale > iRP) //tried to recover higher than RP
+                {
+                    explaination[4] = iRP - iMorale - change;
+                    change = iRP - iMorale;
+                }
+               
                 if (!test)
                     changeMorale(unit, change);
 
                 return change;
             }
 
-            private static void changeMorale(Unit unit, int delta, bool broadcast = false)
+            private static void changeMorale(Unit unit, int delta, bool broadcast = false, bool noKill = false)
             {
 
                 if (!int.TryParse(unit.getModVariable(MORALE), out int iMorale))
@@ -843,7 +829,9 @@ namespace MoraleSystem
 
                 if (delta != 0)
                 {
-                    setMorale(unit, Math.Max(iMorale + delta, 0));
+                    setMorale(unit, Math.Max(iMorale + delta, noKill? 1: 0));
+
+                    //notify morale change
                     if (iMorale + delta < 1 || !unit.isAlive() || unit.getHP() < 1) //already dead
                         return;
                     if (delta / MORALE_DIVISOR == 0)
