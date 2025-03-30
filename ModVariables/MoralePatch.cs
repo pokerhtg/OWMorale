@@ -63,7 +63,7 @@ namespace MoraleSystem
             public static int perLevel = 10;
             public static int recoveryPercent = 8;
             public static int moralePerKill = 40;
-            public static int friendDeathMoraleImpact = -30;
+            public static int friendDeathMoraleImpact = -40;
             public static int perFamilyOpinion = 10;
             private static int getMoraleChange(int dmg) => -3 * (dmg - 2) - (int)(dmg > 7 ? dmg * (0.6 + dmg / 10.0) : 0);
 
@@ -292,7 +292,7 @@ namespace MoraleSystem
                 }
 
                 [HarmonyPatch(nameof(Unit.convert))]
-                static void Postfix(Unit __result, TribeType eTribe)
+                static void Postfix(Unit __result, TribeType eTribe, bool bEnlisted)
                 // public virtual Unit convert(PlayerType ePlayer, TribeType eTribe, bool bEnlisted = false)
                 {
                     if (!__result.canDamage())
@@ -302,7 +302,10 @@ namespace MoraleSystem
                     {
                         initMoralePercent *= 2;
                     }
-
+                    if (bEnlisted)
+                    {
+                        initMoralePercent = 100;
+                    }
                     if (!int.TryParse(__result.getModVariable(MORALE), out int curr) || curr < int.Parse(DEFAULTRP) * initMoralePercent / 100)
                         initializeMorale(__result, DEFAULTRP, initMoralePercent);
                 }
@@ -792,7 +795,7 @@ namespace MoraleSystem
                         int defStruct = (tile.improvement()?.miDefenseModifierFriendly ?? 0 + tile.improvement()?.miDefenseModifier ?? 0);
                         defStruct /= 10;
                         defStruct += tile.hasCity() ? recoveryPercent : 0; //city grants double base recovery
-                        explaination[3] = defStruct * recoveryPercent * iRP / 100;
+                        explaination[3] = defStruct * iRP / 100;
                     }
                //     change += (explaination[3] + explaination[1]) * iRP / 100;
                 }
