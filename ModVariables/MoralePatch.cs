@@ -235,23 +235,8 @@ namespace MoraleSystem
                 {
                     if (debug)
                         Log("setting " + zIndex);
-                    switch (zIndex)
-                    {
-                        case MORALE:
-                            setMorale(__instance, int.Parse(zNewValue), true); //TODO add error checking?
-                            break;
-                        case RPEXTRA:
-                        case MORALEEXTRA:
-                            if (int.TryParse(zNewValue, out int raw))
-                            {
-                                if (raw != 0 && raw % MORALE_DIVISOR != 0) //FIXME right now all multiples of morale divisor is marked as invalid and need to be multiplied. fix code if design changes
-                                {
-                                    //haven't been multiplied by morale divisor yet, obviously
-                                    zNewValue = (raw * MORALE_DIVISOR).SafeToString();
-                                }
-                            }
-                            break;
-                    }
+                    if (zIndex == MORALE)
+                        setMorale(__instance, int.Parse(zNewValue), true); //TODO add error checking?                 }
                 }
 
                 [HarmonyPatch(nameof(Unit.getModVariable))]
@@ -349,28 +334,6 @@ namespace MoraleSystem
             [HarmonyPatch(typeof(ClientUI))]
             public class UIPatch
             {
-                /**     
-                     [HarmonyPatch(nameof(ClientUI.updateUnitAttackPreviewSelection))]
-                     static void Postfix(ref ClientUI __instance, ref IApplication ___APP, UIAttributeTag ___mSelectedPanel)
-                     {
-                         var ClientMgr = ___APP.GetClientManager();
-                         Tile pMouseoverTile = ClientMgr.Selection.getAttackPreviewTile();
-                         Unit pMouseoverUnit = ClientMgr.Selection.getAttackPreviewUnit();
-                         Unit pSelectedUnit = ClientMgr.Selection.getSelectedUnit();
-                         Tile pSelectedTile = pSelectedUnit.tile();
-
-                         int ourMoraleChange = pSelectedUnit.getCounterAttackDamage((pSelectedUnit.canDamageCity(pMouseoverTile)) ? null : pMouseoverUnit, pMouseoverTile);
-                         if (!pSelectedUnit.canDamageCity(pMouseoverTile) && pMouseoverUnit != null)
-                         {
-                             
-                             ___mSelectedPanel.SetKey("EnemyUnit-DamageMoralePreviewText", ourMoraleChange != 0 ? ClientMgr.HelpText.TEXT("TEXT_GAME_UNIT_ATTACK_MORALE_DAMAGE", ClientMgr.HelpText.buildSignedTextVariable(ourMoraleChange, iMultiplier:MORALE_DIVISOR)) : "");
-
-                         }
-
-                         ___mSelectedPanel.SetBool("EnemyUnit-DamageMoralePreviewText-IsActive", ourMoraleChange != 0);
-
-                     }**/
-
                 [HarmonyPatch("updateUnitInfo")]
                 static void Postfix(ref ClientUI __instance, ref IApplication ___APP, Unit pUnit)
                 {
@@ -577,7 +540,8 @@ namespace MoraleSystem
             {
                 if (!int.TryParse(unit.getModVariable(RPEXTRA), out int extraRP))
                     extraRP = 0;
-
+                else 
+                    extraRP *= MORALE_DIVISOR; //extra RP is stored in a non-divided format, so we need to multiply it by the divisor
                 var tribe = unit.getTribe();
                 var btribe = (tribe != TribeType.NONE && unit.game().infos().tribe(tribe).mbDiplomacy);
                 List<int> why = new List<int> {
@@ -750,14 +714,14 @@ namespace MoraleSystem
                 }
                 else
                 {
-                    iRP += int.Parse(unitSpecifc);
+                    iRP += int.Parse(unitSpecifc) * MORALE_DIVISOR;
                     instance.setModVariable(RP, iRP.ToString());
                 }
 
                 bool hasValue = int.TryParse(instance.getModVariable(MORALEEXTRA), out int bonusStart);
 
                 int baseMorale = iRP * initMoralePercent / 100; //80% rp at creation by default
-                setMorale(instance, hasValue ? bonusStart + baseMorale : baseMorale);
+                setMorale(instance, hasValue ? bonusStart * MORALE_DIVISOR + baseMorale : baseMorale);
             }
 
             public static int moraleTurnUpdate(Unit unit, out List<int> explaination, bool test = false)
